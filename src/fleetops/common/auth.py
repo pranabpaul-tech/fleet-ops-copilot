@@ -13,7 +13,9 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from azure.identity import DefaultAzureCredential
+import os
+
+from azure.identity import AzureCliCredential, DefaultAzureCredential
 from azure.core.credentials import AccessToken
 
 FABRIC_SCOPE = "https://api.fabric.microsoft.com/.default"
@@ -34,12 +36,21 @@ class TokenProvider:
     _REFRESH_SKEW_SECONDS = 300
 
     def __init__(self):
-        # AzureCliCredential first: on the jumpbox `az login` is the expected flow,
-        # and it fails predictably (not silently) if nobody's logged in yet, which
-        # DefaultAzureCredential's long fallback chain can obscure.
-        self._credential = DefaultAzureCredential(
-            exclude_shared_token_cache_credential=True,
-        )
+        # On the ACI jumpbox, DefaultAzureCredential silently picks the
+        # container's own system-assigned managed identity (always available
+        # via IMDS) *before* ever trying AzureCliCredential — so `az login` as
+        # a real human has no effect on which identity Python code actually
+        # gets, even after a real interactive sign-in. Hit this as a live
+        # 400 (AADSTS500016, OBO not supported for the MI) on Teams publish,
+        # which specifically requires a delegated human token. Set
+        # FLEETOPS_FORCE_CLI_CREDENTIAL=1 to force AzureCliCredential and
+        # bypass the managed identity for steps that need a real user.
+        if os.environ.get("FLEETOPS_FORCE_CLI_CREDENTIAL") == "1":
+            self._credential = AzureCliCredential()
+        else:
+            self._credential = DefaultAzureCredential(
+                exclude_shared_token_cache_credential=True,
+            )
         self._cache: dict[str, _CachedToken] = {}
 
     def get_token(self, scope: str) -> str:
