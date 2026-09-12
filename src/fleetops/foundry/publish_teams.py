@@ -51,6 +51,12 @@ def main() -> None:
                          default="Conversational investigator for the Fleet Ops Copilot. Correlates real-time "
                                  "bus telemetry, explains likely causes, and requests approval before taking "
                                  "any corrective action.")
+    # The docs call these "optional metadata," but a live 400
+    # ("DeveloperWebsiteUrl must be a valid HTTPS URL") confirmed the API
+    # validates them regardless — omitting them isn't accepted as "no value."
+    parser.add_argument("--developer-website-url", default="https://github.com/pranabpaul-tech/fleet-ops-copilot")
+    parser.add_argument("--privacy-url", default="https://github.com/pranabpaul-tech/fleet-ops-copilot")
+    parser.add_argument("--terms-url", default="https://github.com/pranabpaul-tech/fleet-ops-copilot")
     args = parser.parse_args()
 
     state = StateStore()
@@ -93,6 +99,9 @@ def main() -> None:
         "shortDescription": args.short_description,
         "fullDescription": args.full_description,
         "developerName": args.developer_name,
+        "developerWebsiteUrl": args.developer_website_url,
+        "privacyUrl": args.privacy_url,
+        "termsOfUseUrl": args.terms_url,
     })
 
     title_id = result.get("titleId")
