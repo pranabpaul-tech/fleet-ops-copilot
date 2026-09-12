@@ -1,0 +1,54 @@
+{
+  "sources": [
+    {
+      "id": "e28d0fe8-e7ed-4eba-9775-162a74614aed",
+      "name": "Buses",
+      "type": "SampleData",
+      "properties": {
+        "type": "Buses"
+      }
+    }
+  ],
+  "destinations": [
+    {
+      "id": "927cd1b8-c3e1-44ac-bf71-492864a94b6a",
+      "name": "fccd4366-f396-4569-a01d-b23e28bcc313",
+      "type": "Eventhouse",
+      "properties": {
+        "dataIngestionMode": "ProcessedIngestion",
+        "workspaceId": "3f5e223b-46ae-4fa5-846d-1b00292d2398",
+        "itemId": "97370d2f-a3dc-44c9-92cf-39a74749c291",
+        "databaseName": "fleetops-eventhouse",
+        "tableName": "BusTelemetryRaw",
+        "connectionName": "BusTelemetryStream_y9d1s8",
+        "mappingRuleName": "BusTelemetryRaw_mapping",
+        "inputSerialization": {
+          "type": "Json",
+          "properties": {
+            "encoding": "UTF8"
+          }
+        }
+      },
+      "inputNodes": [
+        {
+          "name": "BusTelemetryStream-stream"
+        }
+      ]
+    }
+  ],
+  "streams": [
+    {
+      "id": "8b7816bb-90e3-4be2-a61d-795079b5ae42",
+      "name": "BusTelemetryStream-stream",
+      "type": "DefaultStream",
+      "properties": {},
+      "inputNodes": [
+        {
+          "name": "Buses"
+        }
+      ]
+    }
+  ],
+  "operators": [],
+  "compatibilityLevel": "1.1"
+}

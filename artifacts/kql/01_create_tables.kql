@@ -1,0 +1,64 @@
+// Raw landing table. Schema confirmed live from the Eventstream's
+// auto-generated ingestion mapping (`.show table BusTelemetryRaw ingestion
+// mappings`) — the built-in "Buses" sample is a real public-transit
+// on-time-performance feed, not the invented custom schema originally
+// guessed at here. Properties' internal shape is still being discovered —
+// see 02_update_policy.kql.
+// create-merge (not create): idempotent whether BusTelemetryRaw already
+// exists with this schema (this project's own re-runs) or is being created
+// fresh — unlike plain .create table, it also picks up newly-added columns
+// on a table that already exists with an earlier subset of them.
+.create-merge table BusTelemetryRaw (
+    Timestamp: datetime,
+    TripId: string,
+    BusLine: string,
+    StationNumber: string,
+    ScheduleTime: datetime,
+    Properties: dynamic
+)
+
+// Flattened, typed table the Operations Agent and the Foundry agent's MCP tool
+// both query. The Operations Agent can't reason over nested JSON, hence the
+// flattening update policy in 02_update_policy.kql rather than querying
+// BusTelemetryRaw directly.
+.create-merge table BusTelemetry (
+    EventTime: datetime,
+    VehicleId: string,
+    RouteId: string,
+    Latitude: real,
+    Longitude: real,
+    SpeedKph: real,
+    EngineTemperatureC: real,
+    BatteryPercent: real,
+    DelayMinutes: real,
+    OccupancyPercent: real,
+    Status: string,
+    IngestionTime: datetime,
+    TimeToNextStationSeconds: real
+)
+
+// Column docstrings — the Operations Agent reads these to interpret columns
+// when it doesn't have Copilot-assisted schema discovery available.
+//
+// `.alter column X docstring "..."` (singular, per-column) is NOT a real KQL
+// command — that verb only alters a column's *type*. Docstrings are set on
+// all columns of a table at once via `.alter-merge table ... column-docstrings`,
+// confirmed against learn.microsoft.com/kusto/management/alter-column-docstrings
+// after the wrong syntax above produced a live "Syntax error: A recognition
+// error occurred." `.alter-merge` (not `.alter`) preserves docstrings on any
+// column not listed here, rather than clearing them.
+.alter-merge table BusTelemetry column-docstrings (
+    EventTime: "Event timestamp reported by the vehicle itself (UTC), not when Fabric received it.",
+    VehicleId: "Sourced from the Buses sample's TripId. Use this (not IngestionTime) to correlate one vehicle's history — note this identifies a trip instance, not necessarily a persistent physical vehicle across trips.",
+    RouteId: "Sourced from the Buses sample's BusLine.",
+    Latitude: "Not provided by the built-in Buses sample — always null. Kept in the schema for a custom feed with real GPS telemetry.",
+    Longitude: "Not provided by the built-in Buses sample — always null. Same caveat as Latitude.",
+    SpeedKph: "Not provided by the built-in Buses sample — always null. Same caveat as Latitude.",
+    EngineTemperatureC: "Not provided by the built-in Buses sample — always null. Kept in the schema for a custom feed with real engine telemetry; do not build alerting on this column against Buses sample data.",
+    BatteryPercent: "Not provided by the built-in Buses sample — always null. Same caveat as EngineTemperatureC.",
+    DelayMinutes: "Minutes between actual arrival (Timestamp) and scheduled arrival (ScheduleTime) — real schedule-adherence data, computed directly rather than trusting a source field. Increasing over consecutive events for the same VehicleId/RouteId indicates worsening delay.",
+    OccupancyPercent: "Not provided by the built-in Buses sample — always null. Kept in the schema for a custom feed with real occupancy sensors.",
+    Status: "Sourced from the Buses sample's Properties.BusState, e.g. 'InMotion'. This fleet's real vehicle-status signal — use this, not EngineTemperatureC/BatteryPercent, for health-style reasoning.",
+    TimeToNextStationSeconds: "Sourced from the Buses sample's Properties.TimeToNextStation (a timespan), converted to seconds. A vehicle whose value here isn't decreasing across consecutive readings while Status stays 'InMotion' is a real stall signal.",
+    IngestionTime: "When Fabric's update policy processed the event (now() at flatten time — effectively ingestion time). Used by the Operations Agent as its staleness watermark for the 'stopped reporting' condition — do not use this for delay/timeline analysis, use EventTime."
+)

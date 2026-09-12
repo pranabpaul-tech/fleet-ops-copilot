@@ -1,0 +1,11 @@
+// Route-level rollup over the last 30 minutes, binned in 5-minute windows.
+// Used by: foundry/mcp_tool.py's embedded schema, validate/smoke_kql.py.
+BusTelemetry
+| where EventTime > ago(30m)
+| where RouteId == "27"
+| summarize
+    Vehicles = dcount(VehicleId),
+    AverageDelay = avg(DelayMinutes),
+    StoppedVehicles = dcountif(VehicleId, SpeedKph == 0)
+    by bin(EventTime, 5m)
+| order by EventTime asc

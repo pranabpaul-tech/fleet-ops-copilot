@@ -1,0 +1,59 @@
+// REAL schema, confirmed live from the Eventstream's auto-generated ingestion
+// mapping (`.show table BusTelemetryRaw ingestion mappings`) — NOT the
+// invented custom schema from the design doc. The built-in "Buses" sample is
+// a real public-transit on-time-performance feed: Timestamp, TripId, BusLine,
+// StationNumber, ScheduleTime, plus a nested Properties bag. It does NOT
+// emit engine temperature or battery telemetry — those were narrative
+// flavor for a hypothetical custom feed, not something this sample provides.
+//
+// Properties' real shape, confirmed from live data: just two fields —
+// BusState ("InMotion" observed so far) and TimeToNextStation (a timespan
+// ETA to the next stop). No Latitude/Longitude/SpeedKph/OccupancyPercent
+// anywhere in this sample — those columns stay permanently null for Buses
+// sample data; they're not a hedge pending confirmation anymore, they're
+// confirmed absent. TimeToNextStationSeconds is a genuinely useful signal
+// this sample DOES provide: a vehicle whose TimeToNextStation isn't
+// decreasing across consecutive readings while BusState stays "InMotion" is
+// a real stall signal, arguably better than a fictional SpeedKph would have
+// been.
+//
+// DelayMinutes is computed directly from Timestamp vs ScheduleTime (arrival
+// vs. schedule) rather than trusting an invented field — this is real
+// schedule-adherence data, arguably a better delay signal than what the
+// design doc imagined.
+//
+// IngestionTime uses now(), not ingestion_time() — a live 400 confirmed that
+// ingestion_time() is rejected in a *transactional* update policy on a source
+// table that has streaming ingestion enabled (the error's own suggested fix
+// was to disable streaming ingestion, which is the wrong tradeoff here: this
+// project's whole point is real-time telemetry, so streaming ingestion stays
+// on). now() is the update policy's execution time, which for a transactional
+// policy is effectively ingestion time anyway — close enough for the
+// Operations Agent's staleness watermark, without the restriction.
+.create-or-alter function FlattenBusTelemetry() {
+    BusTelemetryRaw
+    | extend
+        EventTime = Timestamp,
+        VehicleId = TripId,
+        RouteId = BusLine,
+        Latitude = real(null),              // not provided by the built-in Buses sample
+        Longitude = real(null),             // not provided by the built-in Buses sample
+        SpeedKph = real(null),              // not provided by the built-in Buses sample
+        EngineTemperatureC = real(null),    // not provided by the built-in Buses sample
+        BatteryPercent = real(null),        // not provided by the built-in Buses sample
+        DelayMinutes = toreal(datetime_diff('minute', Timestamp, ScheduleTime)),
+        OccupancyPercent = real(null),       // not provided by the built-in Buses sample
+        Status = tostring(Properties.BusState),
+        TimeToNextStationSeconds = toreal(totimespan(Properties.TimeToNextStation) / 1s),
+        IngestionTime = now()
+    // Column order here must match the TABLE's physical column order, not
+    // reading order — .create-merge appends new columns to the end of an
+    // already-existing table's schema (Kusto's documented behavior), so
+    // TimeToNextStationSeconds (added after IngestionTime already existed)
+    // comes last here too, confirmed by a live schema-mismatch 400 otherwise.
+    | project EventTime, VehicleId, RouteId, Latitude, Longitude, SpeedKph, EngineTemperatureC,
+        BatteryPercent, DelayMinutes, OccupancyPercent, Status, IngestionTime, TimeToNextStationSeconds
+}
+
+.alter table BusTelemetry policy update
+'''[{"IsEnabled": true, "Source": "BusTelemetryRaw", "Query": "FlattenBusTelemetry()", "IsTransactional": true, "PropagateIngestionProperties": false}]'''

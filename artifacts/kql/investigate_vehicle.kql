@@ -1,0 +1,8 @@
+// Event timeline for one vehicle over the last 20 minutes.
+// Used by: foundry/mcp_tool.py's embedded schema (the agent runs a
+// parameterized version of this), validate/smoke_kql.py.
+BusTelemetry
+| where EventTime > ago(20m)
+| where VehicleId == "B-104"
+| project EventTime, VehicleId, RouteId, SpeedKph, EngineTemperatureC, DelayMinutes, Status
+| order by EventTime asc

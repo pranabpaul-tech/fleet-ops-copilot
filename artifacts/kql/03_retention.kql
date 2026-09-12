@@ -1,0 +1,5 @@
+// 30 days is a demo-friendly default — long enough to show trends, short enough
+// to keep F8's shared capacity budget under control. Raw table gets a shorter
+// window since BusTelemetry (flattened) is the table everything else queries.
+.alter-merge table BusTelemetry policy retention softdelete = 30d recoverability = disabled
+.alter-merge table BusTelemetryRaw policy retention softdelete = 7d recoverability = disabled
