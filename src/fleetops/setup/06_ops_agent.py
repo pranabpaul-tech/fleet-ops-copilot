@@ -34,7 +34,10 @@ from fleetops.common.logging_setup import setup_logging
 logger = setup_logging(__name__)
 
 DEFINITION_PATH = Path(__file__).resolve().parents[3] / "artifacts" / "ops-agent" / "OperationsAgentV1.json"
-DEFINITION_ITEM_PATH = "OperationsAgentV1.json"
+# Confirmed live against a portal-authored agent: Fabric's own definition part
+# for this item type is "Configurations.json", not "OperationsAgentV1.json"
+# (that name only ever existed in our own placeholder guess).
+DEFINITION_ITEM_PATH = "Configurations.json"
 
 
 def capture(client: FabricClient, workspace_id: str, ops_agent_id: str) -> None:

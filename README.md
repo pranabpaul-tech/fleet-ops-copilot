@@ -40,8 +40,8 @@ state.json       created at runtime — the seam between Bicep outputs and
 | 1 | Wave 1 Bicep: network, F8 capacity, tenant PL, Key Vault, monitoring, jumpbox, Foundry | `infra/main.bicep` + `deploy.ps1 -Wave 1` |
 | 2 | Onto the jumpbox — everything from here runs inside the VNet | Bastion |
 | 3 | Fabric workspace, Eventhouse, KQL schema, Eventstream | `src/fleetops/setup/01_workspace.py` → `04_eventstream.py` |
-| 4 | Wave 2 Bicep (workspace private link) + network lockdown | `deploy.ps1 -Wave 2`, then `setup/05_network_policy.py --confirm` |
-| 5 | Operations Agent (author in portal, capture, install Teams app) | `setup/06_ops_agent.py` |
+| 4 | Wave 2 Bicep (workspace private link) — done; network lockdown blocked on a tenant admin toggle (see below) | `deploy.ps1 -Wave 2`, then `setup/05_network_policy.py --confirm` |
+| 5 | Operations Agent — created + instructions live; Teams app/recipient/start still manual | `setup/06_ops_agent.py` |
 | 6 | Foundry hosted agent + custom Kusto function tool (risk #1 resolved — see below) | `deploy_hosted_agent.py` (`mcp_tool.py`/`toolbox.py` are historical — MCP path doesn't work here) |
 | 7 | Wave 3 Bicep (bot) + Teams publish | `deploy.ps1 -Wave 3`, then `foundry/publish_teams.py` |
 | 8 | Validate | `python -m fleetops.validate.e2e_flow` |
@@ -120,6 +120,51 @@ shell behind it (arguments are split on whitespace, no quoting respected,
 pull the repo via `curl`+`tar` from a public GitHub archive URL instead, and
 use `scripts/write_b64_file.py` (two plain argv tokens, no whitespace) to
 write file content that would otherwise need shell redirection.
+
+## `api.fabric.microsoft.com` doesn't resolve inside this VNet — corrects the risk #1 diagnosis
+
+Running Phase 4 turned up a real explanation for the DNS failure risk #1
+originally blamed on Foundry's MCP-calling infrastructure being unable to
+reach public endpoints. `api.fabric.microsoft.com` publicly CNAMEs through
+`api.powerbi.com` → `api.privatelink.analysis.windows.net` — and
+`privatelink.analysis.windows.net` is exactly one of the three private DNS
+zones `infra/modules/fabric-tenant-privatelink.bicep` (Wave 1's tenant-level
+Fabric private link) creates and links into this VNet. Once that zone is
+linked, Azure DNS treats it as authoritative for the whole zone inside the
+VNet — and it apparently only holds the tenant-specific record, not a bare
+`api` one, so the CNAME chain dead-ends and the lookup fails for *any*
+VNet-resident caller, confirmed both from the ACI jumpbox and (by
+inference — same VNet, same `snet-agent` injection) the Foundry hosted
+agent's MCP path. The custom-tool fix for risk #1 is still correct — it just
+wasn't a Foundry-specific restriction, it's this VNet's own DNS shadowing
+`api.fabric.microsoft.com` for every VNet-injected resource. Practical
+consequence: any script that calls the plain Fabric REST API (not a
+workspace- or item-scoped private-linked hostname) — `setup/05_network_policy.py`,
+`setup/06_ops_agent.py`, tenant-settings calls — has to run from *outside*
+the VNet (a normal signed-in machine), not from the jumpbox. Everything that
+only needs VNet-scoped access (Kusto queries against the Eventhouse's own
+`queryServiceUri`, the hosted agent's own tool calls) is unaffected.
+
+## Operations Agent — real schema differs from the placeholder guess
+
+`setup/06_ops_agent.py`'s `DEFINITION_ITEM_PATH` originally guessed
+`"OperationsAgentV1.json"` as the definition part name — a live `--capture`
+against a portal-authored agent (`FleetOperationsMonitor`) showed the real
+part is `"Configurations.json"`, shaped as
+`{"$schema": ..., "configuration": {"instructions": "", "dataSources": {<kqlDatabaseId>: {"id", "type": "KustoDatabase", "workspaceId"}}, "actions": {}}, "shouldRun": false}`
+— notably no `recipients` field at all; Teams-channel wiring for
+notifications lives outside this JSON (install the Fabric Operations Agent
+Teams app, set a channel as recipient — portal-only, not exposed here).
+Also confirmed live: `EngineTemperatureC`, `BatteryPercent`, `SpeedKph`,
+`OccupancyPercent`, `Latitude`, `Longitude` are always null in the built-in
+"Buses" sample source — only `EventTime`, `VehicleId`, `RouteId`,
+`DelayMinutes`, `Status`, `IngestionTime`, `TimeToNextStationSeconds`
+actually populate, so `artifacts/ops-agent/OperationsAgentV1.json`'s
+detection instructions key off those rather than the null fields. The
+`instructions` field can be pushed via `updateDefinition` over the REST API
+(no portal step needed for that part) — only "Generate Playbook" (portal-side
+rule preview), the Teams app install/channel, and flipping `shouldRun: true`
+to actually start the agent remain manual.
 
 ## Second risk, found via a related community repo
 

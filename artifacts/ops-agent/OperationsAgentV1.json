@@ -1,27 +1,15 @@
 {
-  "_placeholder": true,
-  "_note": "Best-effort starting shape, NOT a confirmed OperationsAgentV1 schema — it's thinly documented. Author the Operations Agent once in the Fabric portal (Fleet Operations Monitor, pointed at the BusTelemetry KQL database, with the instructions below as your starting text, Generate Playbook, review the generated per-rule KQL in Query Insights), then run `python setup/06_ops_agent.py --capture <opsAgentId>` to pull the real definition down over this file and remove this _placeholder/_note pair.",
-  "displayName": "Fleet Operations Monitor",
-  "instructions": "Continuously monitor bus telemetry in BusTelemetry.\n\nIdentify a potentially serious operational incident when:\n- a vehicle reports repeated abnormal readings (EngineTemperatureC sustained above 105, or Status == \"abnormal\" for more than 2 consecutive readings)\n- a vehicle's DelayMinutes crosses above 10 and keeps increasing across consecutive events on the same RouteId\n- multiple vehicles (2 or more) on the same RouteId show a related issue within the same 10-minute window\n- a vehicle stops reporting unexpectedly (no new IngestionTime for a VehicleId that was previously active within the last 10 minutes)\n\nFor each incident:\n1. identify the VehicleId and RouteId\n2. summarize the evidence and operational impact in plain language, citing the specific readings\n3. assess urgency as low, medium, or high\n4. recommend the safest next operational action\n5. send a Teams message to the Fleet Operations channel\n\nDo not execute a disruptive action without operator approval.",
-  "dataSources": [
-    {
-      "type": "KqlDatabase",
-      "workspaceId": "__WORKSPACE_ID__",
-      "itemId": "__KQL_DATABASE_ID__",
-      "tableName": "BusTelemetry"
-    }
-  ],
-  "recipients": [
-    {
-      "type": "TeamsChannel",
-      "channelId": "__TEAMS_CHANNEL_ID__"
-    }
-  ],
-  "actions": [
-    {
-      "type": "PowerAutomateFlow",
-      "flowUrl": "__POWER_AUTOMATE_TRIGGER_URL__",
-      "description": "Create a maintenance incident and notify the route controller. Requires operator approval before running."
-    }
-  ]
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/operationsAgents/definition/1.0.0/schema.json",
+  "configuration": {
+    "instructions": "Continuously monitor bus telemetry in BusTelemetry.\n\nThe simulated fleet only ever populates EventTime, VehicleId, RouteId, DelayMinutes, Status, IngestionTime, and TimeToNextStationSeconds — Latitude, Longitude, SpeedKph, EngineTemperatureC, BatteryPercent, and OccupancyPercent are always null in this data source, so never key a rule on them.\n\nIdentify a potentially serious operational incident when:\n- a vehicle's DelayMinutes crosses above 10 and keeps increasing across consecutive events on the same RouteId\n- multiple vehicles (2 or more) on the same RouteId show DelayMinutes above 10 within the same 10-minute window\n- a vehicle stops reporting unexpectedly (no new IngestionTime for a VehicleId that was previously active within the last 10 minutes)\n- a vehicle's Status stays NotInStation or Waiting for an unusually long stretch relative to its own recent TimeToNextStationSeconds\n\nFor each incident:\n1. identify the VehicleId and RouteId\n2. summarize the evidence and operational impact in plain language, citing the specific readings\n3. assess urgency as low, medium, or high\n4. recommend the safest next operational action\n\nDo not execute a disruptive action without operator approval.",
+    "dataSources": {
+      "97370d2f-a3dc-44c9-92cf-39a74749c291": {
+        "id": "97370d2f-a3dc-44c9-92cf-39a74749c291",
+        "type": "KustoDatabase",
+        "workspaceId": "3f5e223b-46ae-4fa5-846d-1b00292d2398"
+      }
+    },
+    "actions": {}
+  },
+  "shouldRun": false
 }
