@@ -7,7 +7,9 @@ into that same private network.
 
 This is the implementation of the plan discussed in chat: Bicep for everything
 that's ARM-native, Python for the Fabric workspace items and Foundry agent
-setup that aren't. Nothing has been deployed yet — see the phases below.
+setup that aren't. Phases 0–6 are live and deployed (see the phases below) —
+telemetry is flowing end to end and the hosted agent answers real queries
+against it; phases 7–8 (Teams publish, final validation) are next.
 
 ## Layout
 
@@ -40,7 +42,7 @@ state.json       created at runtime — the seam between Bicep outputs and
 | 3 | Fabric workspace, Eventhouse, KQL schema, Eventstream | `src/fleetops/setup/01_workspace.py` → `04_eventstream.py` |
 | 4 | Wave 2 Bicep (workspace private link) + network lockdown | `deploy.ps1 -Wave 2`, then `setup/05_network_policy.py --confirm` |
 | 5 | Operations Agent (author in portal, capture, install Teams app) | `setup/06_ops_agent.py` |
-| 6 | Foundry hosted agent + Toolbox + MCP tool — **validate this before continuing, see risk #1** | `mcp_tool.py`, `toolbox.py`, `deploy_hosted_agent.py` |
+| 6 | Foundry hosted agent + custom Kusto function tool (risk #1 resolved — see below) | `deploy_hosted_agent.py` (`mcp_tool.py`/`toolbox.py` are historical — MCP path doesn't work here) |
 | 7 | Wave 3 Bicep (bot) + Teams publish | `deploy.ps1 -Wave 3`, then `foundry/publish_teams.py` |
 | 8 | Validate | `python -m fleetops.validate.e2e_flow` |
 
@@ -49,43 +51,75 @@ jumpbox, signed in as a real operator (`az login`) — not a service principal.
 The Operations Agent inherits its creator's identity; `common/auth.py`'s
 `assert_delegated_identity()` enforces this and fails fast otherwise.
 
-## The one thing to validate first
+## Risk #1 — resolved, and the answer is instructive
 
-`src/fleetops/foundry/mcp_tool.py`'s module docstring lays out risk #1 in
-detail: whether Fabric's Eventhouse MCP endpoint is reachable, and
-authenticable, from a VNet-injected Foundry agent talking to a
-workspace-private-link-secured workspace. Nothing in Microsoft's docs
-confirms this combination works. Exercise it in the Foundry playground
-(phase 6) before building the rest of the demo on top of it. If it doesn't
-work, the fallback is a custom tool that queries Kusto directly over the
-private endpoint instead of going through MCP.
+The original open question: is Fabric's Eventhouse MCP endpoint reachable,
+and authenticable, from a VNet-injected Foundry agent talking to a
+workspace-private-link-secured workspace? **Confirmed live: no, not via
+MCP/Toolbox.** The chain of findings, in order:
+
+1. `project_connection_id` on an MCP tool must be the connection's **full ARM
+   resource ID**, not its bare name — passing just the name is a silent bug,
+   not a validation error.
+2. The connection's `audience` is `https://api.fabric.microsoft.com` (matching
+   this endpoint's own host), not `https://analysis.windows.net/powerbi/api`
+   from the generic MCP docs example (that was for a different Fabric path).
+3. `UserEntraToken` auth fails outside a real Teams/interactive session with
+   `"User identity authentication ... requires a delegated Microsoft Entra
+   user context"` — switched to `AgenticIdentityToken` (the agent's own
+   identity; granted it `Viewer` on the Fabric workspace to match).
+4. Past all of that, the call still fails — with `"Name or service not
+   known (api.fabric.microsoft.com:443)"`. **DNS resolution itself fails**
+   from within Foundry's own MCP-calling infrastructure. A network-isolated
+   Foundry account apparently can't reach *any* public-internet MCP endpoint
+   this way, only ones exposed through an actual private endpoint — matching
+   what the docs hinted ("private MCP requires a dedicated MCP subnet for a
+   *self-hosted* server") but had never stated for a third party's public
+   endpoint.
+
+**The fix, live and verified**: skip MCP/Toolbox entirely. `foundry/hosted_agent/main.py`
+has a plain `@tool`-decorated function (`query_bus_telemetry`) that calls
+`azure-kusto-data` directly, in-process, using the agent's own identity. This
+works because the agent's *own container code* has normal outbound
+networking (it's how it reaches the model service at all) — the failure was
+specific to Foundry's separate, more restricted MCP-proxy component, not the
+agent's own network path. Verified end to end: the agent generated its own
+KQL, queried live Eventhouse data, and gave a correct grounded answer citing
+real telemetry.
+
+`mcp_tool.py` and `toolbox.py` are kept as-is for the diagnostic trail (their
+module docstrings tell this whole story) but are no longer part of the
+working path — `deploy_hosted_agent.py` no longer depends on either.
 
 ## Agent shape: MAF hosted agent, not a Prompt Agent
 
 The Fleet Incident Agent is a **hosted agent** — real application code
 (`foundry/hosted_agent/main.py`, using Microsoft Agent Framework's
-`FoundryChatClient` + `FoundryToolbox`) packaged as a container and deployed
-via `foundry/deploy_hosted_agent.py`, not a `PromptAgentDefinition` created
-via `agents.create_version()`. Tools are wired through a Foundry **Toolbox**
-(`foundry/toolbox.py`) wrapping the Fabric Eventhouse MCP connection, rather
-than attaching MCP directly to the agent — the documented pattern for MAF
-hosted agents specifically. Confirmed against a live private-network
-reference deployment in this same subscription
+`FoundryChatClient` + a custom function tool) packaged as a container and
+deployed via `foundry/deploy_hosted_agent.py`, not a `PromptAgentDefinition`
+created via `agents.create_version()`. Confirmed against a live
+private-network reference deployment in this same subscription
 ([`pranabpaul-tech/foundry-iq-v2`](https://github.com/pranabpaul-tech/foundry-iq-v2)),
 which also confirmed `wave3-bot.bicep` and `publish_teams.py` need no changes
 for this — the Teams-publish flow is the same regardless of Prompt vs.
 hosted agent.
 
-Two things that reference caught that the generic docs got wrong or omitted:
-- `project_connection_id` on an MCP tool must be the connection's **full ARM
-  resource ID**, not its bare name — passing just the name is a silent bug.
-- The connection's `audience` is `https://api.fabric.microsoft.com` (matching
-  this endpoint's own host), not `https://analysis.windows.net/powerbi/api`
-  from the generic MCP docs example (that was for a different Fabric path).
+## ACI jumpbox — `az container exec`, no RDP needed
 
-`mcp_tool.py` now creates the connection via a direct `az rest PUT`, not `azd
-ai connection create` — sidesteps the Conditional-Access risk below entirely
-for that one step.
+`infra/modules/aci-jumpbox.bicep` adds a Container Instance in a new
+`snet-container` subnet (delegated to `Microsoft.ContainerInstance/containerGroups`),
+reachable via `az container exec` — the Azure control plane, not a network
+path, so it works the same whether the caller is a human or an agent.
+Mirrors `pranabpaul-tech/foundry-iq-v2`'s own jumpbox pattern. Its
+system-assigned identity needs **Foundry Project Manager** on the Foundry
+account (confirmed live: `Cognitive Services Contributor` does *not* cover
+agent/toolbox writes — that role grants `Microsoft.CognitiveServices/*` as a
+**dataAction**, which does). Bootstrap notes: `az container exec` has no
+shell behind it (arguments are split on whitespace, no quoting respected,
+5000-char command limit) — `git clone` doesn't reliably complete over it, so
+pull the repo via `curl`+`tar` from a public GitHub archive URL instead, and
+use `scripts/write_b64_file.py` (two plain argv tokens, no whitespace) to
+write file content that would otherwise need shell redirection.
 
 ## Second risk, found via a related community repo
 
