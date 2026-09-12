@@ -17,8 +17,12 @@ its own image via `az acr build` and registers hosted agents with a raw
 in this network-isolated project (a real possibility this hasn't been tested
 against), that's the documented fallback, but it needs an ACR we don't have.
 
-Run toolbox.py first — this script reads the toolbox's MCP endpoint from
-state.json['toolbox'].
+RISK #1 UPDATE: this no longer uses the Toolbox/MCP path (see hosted_agent/
+main.py's module docstring for why — confirmed live that Foundry's MCP-calling
+infrastructure can't reach a public internet MCP endpoint from a
+network-isolated account). It now passes EVENTHOUSE_QUERY_URI and
+EVENTHOUSE_DATABASE_NAME so the agent's custom function tool can query Kusto
+directly, in-process. toolbox.py / state.json['toolbox'] are no longer required.
 """
 from __future__ import annotations
 
@@ -70,7 +74,9 @@ def deploy(model_name: str) -> None:
     state = StateStore()
     account_name = state.output("wave1", "foundryAccountName")
     project_name = state.output("wave1", "foundryProjectName")
-    toolbox = state.require("toolbox", "toolboxName", "mcpEndpoint")
+    state.require("eventhouse", "queryServiceUri", "kqlDatabaseName")
+    query_uri = state.output("eventhouse", "queryServiceUri")
+    database_name = state.output("eventhouse", "kqlDatabaseName")
 
     endpoint = project_endpoint(account_name, project_name)
     zip_path = _zip_source(SOURCE_DIR)
@@ -95,7 +101,8 @@ def deploy(model_name: str) -> None:
                     # live reference found FOUNDRY_*/AGENT_* env var names are
                     # platform-reserved and rejected; it's auto-injected.
                     "AZURE_AI_MODEL_DEPLOYMENT_NAME": model_name,
-                    "TOOLBOX_ENDPOINT": toolbox["mcpEndpoint"],
+                    "EVENTHOUSE_QUERY_URI": query_uri,
+                    "EVENTHOUSE_DATABASE_NAME": database_name,
                 },
                 protocol_versions=[ProtocolVersionRecord(protocol="responses", version="2.0.0")],
             ),

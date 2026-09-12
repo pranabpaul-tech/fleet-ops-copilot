@@ -7,27 +7,73 @@ foundry/deploy_hosted_agent.py. Pattern confirmed against Microsoft's own
 04-foundry-toolbox sample (foundry-samples repo) and a live private-network
 reference deployment (pranabpaul-tech/foundry-iq-v2, same subscription).
 
-Tools come from a single Foundry Toolbox (fleetops/foundry/toolbox.py) wrapping
-the Fabric Eventhouse MCP endpoint, rather than a generic MCP client — the
-platform's documented guidance for MAF hosted agents specifically: "If you use
-Microsoft Agent Framework, connect through FoundryToolbox ... instead of a
-generic MCP client."
+RISK #1 RESOLUTION: tools originally came from a Foundry Toolbox wrapping the
+Fabric Eventhouse MCP endpoint (Microsoft's documented pattern for MAF hosted
+agents). Confirmed LIVE that this doesn't work: Foundry's own MCP-calling
+infrastructure can't resolve api.fabric.microsoft.com at all
+("Name or service not known") — a network-isolated Foundry account can't
+reach an arbitrary public-internet MCP endpoint, only ones exposed through an
+actual private endpoint, and Fabric's global MCP gateway isn't one we have.
+This is a different failure from the agent's own container code, which DOES
+have normal outbound networking (it's how the container reaches the model
+service at all) — so the fix is a plain custom function tool that queries
+Kusto directly from the agent's own process, not through Foundry's separate
+MCP proxy. No MCP, no Toolbox, just azure-kusto-data called in-process.
 
 FOUNDRY_PROJECT_ENDPOINT and AZURE_AI_MODEL_DEPLOYMENT_NAME are injected by
-the platform / set at registration time — see register_hosted_agent in
-deploy_hosted_agent.py. Do not set FOUNDRY_* or AGENT_* env vars yourself:
-they're reserved and the platform rejects registrations that try.
+the platform / set at registration time. EVENTHOUSE_QUERY_URI and
+EVENTHOUSE_DATABASE_NAME are set explicitly in deploy_hosted_agent.py from
+state.json. Do not set FOUNDRY_* or AGENT_* env vars yourself: they're
+reserved and the platform rejects registrations that try.
 """
 import asyncio
 import os
+from typing import Annotated
 
-from agent_framework import Agent
+from agent_framework import Agent, tool
 from agent_framework.foundry import FoundryChatClient
-from agent_framework_foundry_hosting import FoundryToolbox, ResponsesHostServer
+from agent_framework_foundry_hosting import ResponsesHostServer
 from azure.identity import DefaultAzureCredential
+from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
 from dotenv import load_dotenv
+from pydantic import Field
 
 load_dotenv()
+
+_credential = DefaultAzureCredential()
+_kusto_client: KustoClient | None = None
+
+
+def _get_kusto_client() -> KustoClient:
+    global _kusto_client
+    if _kusto_client is None:
+        kcsb = KustoConnectionStringBuilder.with_azure_token_credential(
+            connection_string=os.environ["EVENTHOUSE_QUERY_URI"],
+            credential=_credential,
+        )
+        _kusto_client = KustoClient(kcsb)
+    return _kusto_client
+
+
+@tool(approval_mode="never_require")
+def query_bus_telemetry(
+    kql: Annotated[str, Field(description=(
+        "A KQL query against the BusTelemetry table (or BusTelemetryRaw). "
+        "Write the full query yourself, e.g. "
+        "\"BusTelemetry | where EventTime > ago(20m) | order by EventTime desc | take 20\"."
+    ))],
+) -> str:
+    """Run a KQL query directly against the Fleet Ops Eventhouse and return the
+    result rows as JSON. This is the only source of truth for current vehicle
+    telemetry, delays, and timelines — always call this rather than guessing."""
+    try:
+        response = _get_kusto_client().execute(os.environ["EVENTHOUSE_DATABASE_NAME"], kql)
+        table = response.primary_results[0]
+        columns = [c.column_name for c in table.columns]
+        rows = [dict(zip(columns, row)) for row in table.rows]
+        return str(rows)
+    except Exception as exc:  # noqa: BLE001 — surfaced to the model verbatim, not swallowed
+        return f"QUERY FAILED: {exc}"
 
 INSTRUCTIONS = """\
 You are the Fleet Incident Agent for control-room operators.
@@ -66,25 +112,16 @@ and do not proceed as if it had worked.
 
 
 async def main() -> None:
-    credential = DefaultAzureCredential()
-
-    # FoundryToolbox resolves the toolbox endpoint from the environment
-    # (TOOLBOX_ENDPOINT, or FOUNDRY_PROJECT_ENDPOINT + TOOLBOX_NAME),
-    # authenticates every request with the credential (the agent's own Entra
-    # identity at runtime), and forwards the platform's per-request call-id
-    # to the toolbox.
-    toolbox = FoundryToolbox(credential)
-
     client = FoundryChatClient(
         project_endpoint=os.environ["FOUNDRY_PROJECT_ENDPOINT"],
         model=os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"],
-        credential=credential,
+        credential=_credential,
     )
 
     agent = Agent(
         client=client,
         instructions=INSTRUCTIONS,
-        tools=toolbox,
+        tools=query_bus_telemetry,
         # History is managed by the hosting infrastructure (conversation ID) —
         # no need for the agent itself to persist it too.
         default_options={"store": False},
