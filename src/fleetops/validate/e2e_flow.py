@@ -1,14 +1,14 @@
 #!/usr/bin/env python
 """End-to-end validation: ingestion freshness, the reference KQL queries,
-private DNS resolution, a live agent turn that must cite the MCP tool's
-output, and a negative test proving the approval gate actually blocks an
-unapproved action call.
+private DNS resolution, a live agent turn that must call its Kusto tool, and
+a negative test proving the approval gate actually blocks an unapproved
+action call.
 
 Run this last, from the jumpbox, after every setup/ and foundry/ script has
-succeeded. A failure in "agent MCP turn" is reported as a WARNING, not a hard
-failure — it's the one step testing the architecture's single biggest
-unvalidated risk (see foundry/mcp_tool.py's module docstring), so a failure
-here is diagnostic information, not necessarily a bug in this script.
+succeeded. A failure in "agent tool turn" is reported as a WARNING, not a hard
+failure — it's checking a live model-driven tool call, which is inherently a
+little less deterministic than the other checks (see foundry/hosted_agent/main.py's
+module docstring for the custom-tool architecture this validates).
 """
 from __future__ import annotations
 
@@ -46,8 +46,8 @@ def check_approval_gate_blocks_unapproved_calls() -> bool:
         return True
 
 
-def check_agent_mcp_turn() -> bool:
-    logger.info("--- agent MCP turn (risk #1) ---")
+def check_agent_tool_turn() -> bool:
+    logger.info("--- agent tool turn (custom Kusto tool) ---")
     try:
         from azure.ai.projects import AIProjectClient
         from azure.identity import DefaultAzureCredential
@@ -59,27 +59,23 @@ def check_agent_mcp_turn() -> bool:
         foundry_agent = state.require("foundry_agent", "agentName")
 
         project = AIProjectClient(endpoint=project_endpoint(account_name, project_name), credential=DefaultAzureCredential())
-        openai_client = project.get_openai_client()
-        conversation = openai_client.conversations.create()
+        openai_client = project.get_openai_client(agent_name=foundry_agent["agentName"])
         response = openai_client.responses.create(
-            conversation=conversation.id,
-            input="What is the most recent event for any vehicle in BusTelemetry, and when was it?",
-            extra_body={"agent_reference": {"name": foundry_agent["agentName"], "type": "agent_reference"}},
+            input="What is the most recent event for any vehicle in BusTelemetry, and when was it? "
+                  "Query the table directly.",
         )
 
-        used_mcp = any(getattr(item, "type", "").startswith("mcp_") for item in response.output)
-        if not used_mcp:
-            logger.warning("agent MCP turn: WARNING — response didn't include any mcp_* output items. "
-                            "If require_approval='always', the first call is expected to stop at an "
-                            "mcp_approval_request rather than a real tool call — check response.output "
-                            "manually before concluding the MCP path is broken.")
+        item_types = [getattr(item, "type", "?") for item in response.output]
+        used_tool = any("call" in t for t in item_types)
+        if not used_tool:
+            logger.warning("agent tool turn: WARNING — response didn't include any tool-call output items "
+                            "(saw: %s). The agent may have answered from general knowledge instead of "
+                            "querying live data — check response.output_text manually.", item_types)
             return False
-        logger.info("agent MCP turn: PASS — response included MCP tool-call activity")
+        logger.info("agent tool turn: PASS — response included tool-call activity (%s)", item_types)
         return True
     except Exception as exc:  # noqa: BLE001 — this check is explicitly allowed to fail; log why and move on
-        logger.warning("agent MCP turn: WARNING — could not complete a live agent turn (%s). "
-                        "This is the architecture's flagged top risk (foundry/mcp_tool.py) — a failure "
-                        "here means it needs investigation, not that this script is broken.", exc)
+        logger.warning("agent tool turn: WARNING — could not complete a live agent turn (%s).", exc)
         return False
 
 
@@ -88,7 +84,7 @@ def main() -> None:
         "smoke_kql": run_subcheck("KQL smoke test", "smoke_kql.py"),
         "network_check": run_subcheck("Private DNS resolution", "network_check.py"),
         "approval_gate": check_approval_gate_blocks_unapproved_calls(),
-        "agent_mcp_turn": check_agent_mcp_turn(),
+        "agent_tool_turn": check_agent_tool_turn(),
     }
 
     logger.info("\n=== Summary ===")
@@ -99,8 +95,8 @@ def main() -> None:
     if not all(results[k] for k in hard_checks):
         logger.error("One or more required checks failed.")
         sys.exit(1)
-    if not results["agent_mcp_turn"]:
-        logger.warning("Required checks passed; the MCP turn check did not — see risk #1.")
+    if not results["agent_tool_turn"]:
+        logger.warning("Required checks passed; the agent tool-call turn did not — see above.")
     logger.info("e2e_flow: DONE")
 
 
