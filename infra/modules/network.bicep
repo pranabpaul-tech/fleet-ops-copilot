@@ -19,6 +19,10 @@ param bastionSubnetPrefix string = '10.10.2.0/26'
 param jumpboxSubnetPrefix string = '10.10.2.64/27'
 param jumpboxSubnetName string = 'snet-jumpbox'
 
+@description('Container Instance subnet — delegated to Microsoft.ContainerInstance/containerGroups. Hosts an ACI jumpbox reachable via `az container exec` (Azure control plane, no RDP/Bastion needed), mirroring pranabpaul-tech/foundry-iq-v2\'s pattern.')
+param containerSubnetPrefix string = '10.10.3.0/24'
+param containerSubnetName string = 'snet-container'
+
 resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
   name: vnetName
   location: location
@@ -61,6 +65,20 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
           addressPrefix: jumpboxSubnetPrefix
         }
       }
+      {
+        name: containerSubnetName
+        properties: {
+          addressPrefix: containerSubnetPrefix
+          delegations: [
+            {
+              name: 'aciDelegation'
+              properties: {
+                serviceName: 'Microsoft.ContainerInstance/containerGroups'
+              }
+            }
+          ]
+        }
+      }
     ]
   }
 }
@@ -74,3 +92,5 @@ output agentSubnetName string = agentSubnetName
 output bastionSubnetId string = vnet.properties.subnets[2].id
 output jumpboxSubnetId string = vnet.properties.subnets[3].id
 output jumpboxSubnetName string = jumpboxSubnetName
+output containerSubnetId string = vnet.properties.subnets[4].id
+output containerSubnetName string = containerSubnetName
