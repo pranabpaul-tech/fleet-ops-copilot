@@ -29,9 +29,19 @@ with DefaultAzureCredential() as credential, AIProjectClient(endpoint=endpoint, 
         input="What is the most recent event you can find in the BusTelemetry table, and when was it? Query the table directly.",
     )
 
+print("=== response.status ===")
+print(getattr(response, "status", "?"))
+print("=== response.error ===")
+print(getattr(response, "error", None))
 print("=== response.output_text ===")
 print(response.output_text)
 print()
 print("=== output item types ===")
 for item in response.output:
     print(getattr(item, "type", "?"))
+print("=== full response (model_dump) ===")
+try:
+    print(json.dumps(response.model_dump(), indent=2, default=str)[:4000])
+except Exception as e:
+    print("dump failed:", e)
+    print(repr(response)[:4000])
