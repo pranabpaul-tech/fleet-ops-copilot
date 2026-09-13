@@ -21,6 +21,18 @@
 // After this deploys, run foundry/publish_teams.py — it does the PATCH
 // (protocol_configuration / authorization_schemes) and the microsoft365/publish
 // call that the Bicep resource alone doesn't cover.
+//
+// publicNetworkAccess is 'Enabled' on this resource — confirmed against a live
+// reference deployment (pranabpaul-tech/foundry-iq-v2, same subscription,
+// same VNet-injected-Foundry-agent-behind-a-Bot-Service architecture) that
+// 'Disabled' here blocks channel client-facing traffic outright (tested via
+// Direct Line: NetworkDenied), not just inbound calls to the Foundry side.
+// The actual network isolation in this design lives entirely on the Foundry
+// account (publicNetworkAccess: Disabled there, with its own
+// source-IP-filtered exception for just the Activity Protocol route) — this
+// Bot Service resource is meant to be reachable, matching Microsoft's own
+// publish-copilot-virtual-network guide's premise that Bot Service/Teams
+// infrastructure reaches the agent through that exception, not through our VNet.
 
 @description('Bot Service resource name.')
 param botName string
@@ -49,7 +61,7 @@ resource botService 'Microsoft.BotService/botServices@2022-09-15' = {
     msaAppId: msaAppId
     msaAppTenantId: tenantId
     msaAppType: 'SingleTenant'
-    publicNetworkAccess: 'Disabled'
+    publicNetworkAccess: 'Enabled'
   }
 }
 

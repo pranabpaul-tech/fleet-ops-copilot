@@ -105,15 +105,22 @@ def main() -> None:
     })
 
     title_id = result.get("titleId")
+    teams_app_id = result.get("teamsAppId")
     state.merge("teams_publish", {
         "appVersion": app_version,
         "scope": args.scope,
         "titleId": title_id,
+        "teamsAppId": teams_app_id,
     })
-    logger.info("Published. titleId=%s", title_id)
+    logger.info("Published. titleId=%s teamsAppId=%s", title_id, teams_app_id)
+    if teams_app_id:
+        # Confirmed against a live reference (pranabpaul-tech/foundry-iq-v2):
+        # this is a real, working deep link — titleId alone isn't enough to
+        # construct one.
+        logger.info("Open directly in Teams: https://teams.microsoft.com/l/app/%s", teams_app_id)
     if args.scope == "Shared":
-        logger.info("Find it under 'Your agents' in the Teams/M365 agent store (can take ~1h for the store "
-                    "cache to refresh — sign out/in to force it).")
+        logger.info("Or find it under 'Your agents' in the Teams/M365 agent store (can take ~1h for the "
+                    "store cache to refresh — sign out/in to force it).")
     else:
         logger.info("Submitted for Microsoft 365 admin approval: "
                     "https://admin.cloud.microsoft/?#/agents/all/requested — it appears under "
