@@ -3,14 +3,29 @@
 hosted agent (the MAF pattern) — a real Python app with a custom Kusto tool,
 not a declarative Prompt Agent.
 
-Uses the SDK code-upload path (`create_version_from_code` with
-`CodeDependencyResolution.REMOTE_BUILD`) rather than build-your-own-container-
-and-push-to-ACR, since this project doesn't provision a Container Registry.
+Default path: the SDK code-upload path (`create_version_from_code` with
+`CodeDependencyResolution.REMOTE_BUILD`) — no image build step needed.
 
-Grants the deployed agent's own identity read access to the Fabric workspace
-and its Kusto database — see `_grant_agent_data_access` below — so its
-`query_bus_telemetry` tool (in hosted_agent/main.py) can query the Eventhouse
-directly, in-process, using its own credentials.
+Fallback path (`--image`): register a pre-built container image instead.
+Use this if REMOTE_BUILD fails with a `ProvisioningError` that doesn't
+resolve on retry (seen live: identical failure and content_hash across
+three consecutive attempts, despite both capability hosts and the SDK
+version being fine — a platform-side issue with the source-upload path
+specifically, not this project's config). To use it:
+
+    az deployment group create --resource-group <rg> \\
+      --template-file infra/modules/foundry.bicep ... enableContainerRegistry=true
+    az acr update --name <acrName> --public-network-enabled true   # ACR Tasks'
+      # build agent can't reach a private-only registry — temporary
+    az acr build --registry <acrName> --image fleet-incident-agent:v1 \\
+      --platform linux/amd64 src/fleetops/foundry/hosted_agent
+    az acr update --name <acrName> --public-network-enabled false  # lock back down
+    python deploy_hosted_agent.py --image <acrName>.azurecr.io/fleet-incident-agent:v1
+
+Either path grants the deployed agent's own identity read access to the
+Fabric workspace and its Kusto database — see `_grant_agent_data_access`
+below — so its `query_bus_telemetry` tool (in hosted_agent/main.py) can
+query the Eventhouse directly, in-process, using its own credentials.
 """
 from __future__ import annotations
 
@@ -48,19 +63,72 @@ def _zip_source(source_dir: Path) -> Path:
     return zip_path
 
 
-def deploy(model_name: str) -> None:
-    from azure.ai.projects import AIProjectClient
+def _wait_for_active(project, created) -> None:
+    for attempt in range(60):
+        time.sleep(10)
+        details = project.agents.get_version(agent_name=HOSTED_AGENT_NAME, agent_version=created.version)
+        status = details["status"]
+        logger.info("Provisioning status: %s (attempt %d/60)", status, attempt + 1)
+        if status == "active":
+            return
+        if status == "failed":
+            raise RuntimeError(f"Hosted agent provisioning failed: {dict(details)}")
+    raise RuntimeError("Timed out waiting for the hosted agent version to become active.")
+
+
+def _finish_deploy(state: StateStore, account_name: str, project_name: str, project, created,
+                    query_uri: str, database_name: str) -> None:
+    """Common tail shared by both the REMOTE_BUILD and pre-built-image paths:
+    poll for active, route traffic to the new version, record state, grant
+    data access."""
     from azure.ai.projects.models import (
         AgentEndpointConfig,
-        CodeConfiguration,
-        CodeDependencyResolution,
         FixedRatioVersionSelectionRule,
-        HostedAgentDefinition,
         ProtocolConfiguration,
-        ProtocolVersionRecord,
         ResponsesProtocolConfiguration,
         VersionSelector,
     )
+
+    _wait_for_active(project, created)
+
+    project.agents.update_details(
+        agent_name=HOSTED_AGENT_NAME,
+        agent_endpoint=AgentEndpointConfig(
+            version_selector=VersionSelector(
+                version_selection_rules=[
+                    FixedRatioVersionSelectionRule(agent_version=created.version, traffic_percentage=100),
+                ]
+            ),
+            protocol_configuration=ProtocolConfiguration(responses=ResponsesProtocolConfiguration()),
+        ),
+    )
+
+    # publish_teams.py needs instance_identity.client_id + the activityProtocol
+    # endpoint — fetch both now rather than leaving it as a manual follow-up.
+    rest = FoundryAgentRest(account_name, project_name)
+    details = rest.get_agent(HOSTED_AGENT_NAME)
+    identity = details.get("instance_identity", {})
+    client_id = identity.get("client_id")
+    if not client_id:
+        raise RuntimeError(f"Hosted agent {HOSTED_AGENT_NAME} has no instance_identity.client_id yet. "
+                            f"Full response: {details}")
+
+    state.merge("foundry_agent", {
+        "agentName": HOSTED_AGENT_NAME,
+        "agentVersion": created.version,
+        "kind": "hosted",
+        "clientId": client_id,
+        "principalId": identity.get("principal_id"),
+        "activityEndpoint": rest.activity_protocol_endpoint(HOSTED_AGENT_NAME),
+    })
+
+    _grant_agent_data_access(state, identity.get("principal_id"), query_uri, database_name)
+    logger.info("Done. state.json['foundry_agent'] updated. Next: infra/wave3-bot.bicep, then foundry/publish_teams.py.")
+
+
+def deploy(model_name: str) -> None:
+    from azure.ai.projects import AIProjectClient
+    from azure.ai.projects.models import CodeConfiguration, CodeDependencyResolution, HostedAgentDefinition, ProtocolVersionRecord
     from azure.identity import DefaultAzureCredential
 
     state = StateStore()
@@ -101,52 +169,44 @@ def deploy(model_name: str) -> None:
             code=code_stream,
         )
         logger.info("Created hosted agent version %s", created.version)
+        _finish_deploy(state, account_name, project_name, project, created, query_uri, database_name)
 
-        for attempt in range(60):
-            time.sleep(10)
-            details = project.agents.get_version(agent_name=HOSTED_AGENT_NAME, agent_version=created.version)
-            status = details["status"]
-            logger.info("Provisioning status: %s (attempt %d/60)", status, attempt + 1)
-            if status == "active":
-                break
-            if status == "failed":
-                raise RuntimeError(f"Hosted agent provisioning failed: {dict(details)}")
-        else:
-            raise RuntimeError("Timed out waiting for the hosted agent version to become active.")
 
-        project.agents.update_details(
+def deploy_from_image(image: str, model_name: str) -> None:
+    """Fallback path — register a pre-built container image instead of
+    letting the platform build one from source. See this module's docstring
+    for the full build-and-push sequence."""
+    from azure.ai.projects import AIProjectClient
+    from azure.ai.projects.models import ContainerConfiguration, HostedAgentDefinition, ProtocolVersionRecord
+    from azure.identity import DefaultAzureCredential
+
+    state = StateStore()
+    account_name = state.output("wave1", "foundryAccountName")
+    project_name = state.output("wave1", "foundryProjectName")
+    state.require("eventhouse", "queryServiceUri", "kqlDatabaseName")
+    query_uri = state.output("eventhouse", "queryServiceUri")
+    database_name = state.output("eventhouse", "kqlDatabaseName")
+
+    endpoint = project_endpoint(account_name, project_name)
+
+    with DefaultAzureCredential() as credential, AIProjectClient(endpoint=endpoint, credential=credential) as project:
+        created = project.agents.create_version(
             agent_name=HOSTED_AGENT_NAME,
-            agent_endpoint=AgentEndpointConfig(
-                version_selector=VersionSelector(
-                    version_selection_rules=[
-                        FixedRatioVersionSelectionRule(agent_version=created.version, traffic_percentage=100),
-                    ]
-                ),
-                protocol_configuration=ProtocolConfiguration(responses=ResponsesProtocolConfiguration()),
+            description="Fleet Incident Agent — conversational investigator for the Fleet Ops Copilot.",
+            definition=HostedAgentDefinition(
+                cpu="1",
+                memory="2Gi",
+                container_configuration=ContainerConfiguration(image=image),
+                environment_variables={
+                    "AZURE_AI_MODEL_DEPLOYMENT_NAME": model_name,
+                    "EVENTHOUSE_QUERY_URI": query_uri,
+                    "EVENTHOUSE_DATABASE_NAME": database_name,
+                },
+                protocol_versions=[ProtocolVersionRecord(protocol="responses", version="2.0.0")],
             ),
         )
-
-    # publish_teams.py needs instance_identity.client_id + the activityProtocol
-    # endpoint — fetch both now rather than leaving it as a manual follow-up.
-    rest = FoundryAgentRest(account_name, project_name)
-    details = rest.get_agent(HOSTED_AGENT_NAME)
-    identity = details.get("instance_identity", {})
-    client_id = identity.get("client_id")
-    if not client_id:
-        raise RuntimeError(f"Hosted agent {HOSTED_AGENT_NAME} has no instance_identity.client_id yet. "
-                            f"Full response: {details}")
-
-    state.merge("foundry_agent", {
-        "agentName": HOSTED_AGENT_NAME,
-        "agentVersion": created.version,
-        "kind": "hosted",
-        "clientId": client_id,
-        "principalId": identity.get("principal_id"),
-        "activityEndpoint": rest.activity_protocol_endpoint(HOSTED_AGENT_NAME),
-    })
-
-    _grant_agent_data_access(state, identity.get("principal_id"), query_uri, database_name)
-    logger.info("Done. state.json['foundry_agent'] updated. Next: infra/wave3-bot.bicep, then foundry/publish_teams.py.")
+        logger.info("Created hosted agent version %s from image %s", created.version, image)
+        _finish_deploy(state, account_name, project_name, project, created, query_uri, database_name)
 
 
 def _grant_agent_data_access(state: StateStore, agent_principal_id: str, query_uri: str, database_name: str) -> None:
@@ -173,8 +233,14 @@ def _grant_agent_data_access(state: StateStore, agent_principal_id: str, query_u
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="gpt-4.1")
+    parser.add_argument("--image", metavar="REGISTRY/REPO:TAG",
+                         help="Register this pre-built image instead of building from source — the "
+                              "documented fallback when REMOTE_BUILD hits a platform-side ProvisioningError.")
     args = parser.parse_args()
-    deploy(args.model)
+    if args.image:
+        deploy_from_image(args.image, args.model)
+    else:
+        deploy(args.model)
 
 
 if __name__ == "__main__":
