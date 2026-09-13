@@ -71,6 +71,15 @@ resource teamsChannel 'Microsoft.BotService/botServices/channels@2021-03-01' = {
   location: 'global'
   properties: {
     channelName: 'MsTeamsChannel'
+    properties: {
+      // Confirmed live: this resource deploys fine with acceptedTerms
+      // defaulting to false, and the channel shows isEnabled/provisioningState
+      // Succeeded regardless — nothing in the deployment surfaces that the
+      // agent won't actually respond in Teams until you check this specific
+      // field. Set it explicitly rather than relying on the API default.
+      acceptedTerms: true
+      isEnabled: true
+    }
   }
 }
 
