@@ -25,7 +25,7 @@ logger = setup_logging(__name__)
 # azd also exposes its own AZURE_* environment bookkeeping vars alongside the
 # actual Bicep outputs — only these are ones main.bicep declares as outputs.
 WAVE1_OUTPUT_KEYS = [
-    "resourceGroupName", "vnetId", "vnetName", "agentSubnetId", "agentSubnetName",
+    "location", "resourceGroupName", "vnetId", "vnetName", "agentSubnetId", "agentSubnetName",
     "peSubnetId", "peSubnetName", "containerSubnetId", "jumpboxContainerGroupName",
     "jumpboxPrincipalId", "fabricCapacityId", "fabricCapacityName", "keyVaultName",
     "keyVaultUri", "logAnalyticsWorkspaceId", "appInsightsConnectionString",

@@ -148,6 +148,7 @@ module jumpboxFoundryAccess 'modules/aci-foundry-rbac.bicep' = {
   }
 }
 
+output location string = location
 output resourceGroupName string = rg.name
 output vnetId string = network.outputs.vnetId
 output vnetName string = network.outputs.vnetName
