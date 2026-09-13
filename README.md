@@ -112,22 +112,42 @@ KQL schema, and Eventstream, so telemetry starts flowing right after
 ### 3. Finish the remaining stages
 
 The rest can't be folded into one atomic deployment — each stage needs an ID
-or a manual step that only exists after the previous one runs. Run these in
-order (from the jumpbox: `az container exec --resource-group <rg> --name
-ci-fleetops-jump --container-name jumpbox --exec-command "..."`, or from any
-machine signed in with `az login`, for anything that only needs a delegated
-Azure/Fabric REST call rather than direct network access):
+or a manual step that only exists after the previous one runs.
 
-| # | Step | Command |
+**Where to run these from:** every command below is a plain script under
+`src/fleetops/`, run with `python <path>` **from the repo root** of your
+clone (each script adds its own `src/` to `sys.path`, so no install step or
+`PYTHONPATH` is needed) — e.g. on Windows:
+
+```powershell
+.venv\Scripts\python.exe src\fleetops\setup\05_network_policy.py --confirm
+```
+
+or on macOS/Linux:
+
+```bash
+.venv/bin/python src/fleetops/setup/05_network_policy.py --confirm
+```
+
+All of these are plain Azure/Fabric REST calls, signed in as yourself — none
+of them need to run from inside the VNet, so your own machine (wherever you
+ran `azd provision` from) is fine. The one exception is step 8
+(`validate.e2e_flow`), which also exercises the Fabric workspace's *private*
+endpoint — for a fully accurate result, run that one from the jumpbox
+instead (`az container exec --resource-group <rg> --name ci-fleetops-jump
+--container-name jumpbox --exec-command "python3 /path/to/e2e_flow.py"`, after
+copying the repo onto it).
+
+| # | Step | Script (path relative to repo root) |
 |---|---|---|
 | 1 | Flip two Fabric admin portal tenant settings (see **Manual steps**) | — |
-| 2 | Lock down the workspace to private access | `python -m fleetops.setup.05_network_policy --confirm` |
+| 2 | Lock down the workspace to private access | `src/fleetops/setup/05_network_policy.py --confirm` |
 | 3 | Deploy the workspace-level Fabric private link | `./infra/deploy.ps1 -Wave 2` |
-| 4 | Deploy the Foundry hosted agent (grants it Kusto access automatically) | `python -m fleetops.foundry.deploy_hosted_agent` |
+| 4 | Deploy the Foundry hosted agent (grants it Kusto access automatically) | `src/fleetops/foundry/deploy_hosted_agent.py` |
 | 5 | Deploy the Bot Service | `./infra/deploy.ps1 -Wave 3` |
-| 6 | Publish the agent to Microsoft Teams | `python -m fleetops.foundry.publish_teams` |
-| 7 | Author the Operations Agent (see **Manual steps**) | `python -m fleetops.setup.06_ops_agent --capture <id>` |
-| 8 | Validate everything end to end | `python -m fleetops.validate.e2e_flow` |
+| 6 | Publish the agent to Microsoft Teams | `src/fleetops/foundry/publish_teams.py` |
+| 7 | Author the Operations Agent (see **Manual steps**) | `src/fleetops/setup/06_ops_agent.py --capture <id>` |
+| 8 | Validate everything end to end | `src/fleetops/validate/e2e_flow.py` |
 
 ## Manual steps required
 
@@ -142,14 +162,30 @@ interactive sign-in:
   `Microsoft.Search`, `Microsoft.DocumentDB`, `Microsoft.Storage`,
   `Microsoft.KeyVault`. Re-register `Microsoft.Fabric` again the first time
   you use workspace-level private link — it has its own registration flag.
-- **Authoring the Operations Agent**: create it once in the Fabric portal
-  (point it at the Eventhouse's KQL database), then run
-  `setup/06_ops_agent.py --capture <id>` to pull its real definition into
-  this repo — its schema isn't fully documented, so this repo captures it
-  from a live one rather than guessing. You can then push updated
-  instructions to it via `setup/06_ops_agent.py --apply`, but the compiled
-  **playbook** (from clicking **Generate Playbook**) and actually **starting**
-  the agent are portal-only actions with no API equivalent.
+- **Authoring the Operations Agent** — its schema isn't fully documented, so
+  this repo captures a real definition from the portal rather than guessing
+  one:
+  1. In the [Fabric portal](https://app.fabric.microsoft.com), open your
+     workspace (`fleet-ops-copilot` by default) and create a new
+     **Operations Agent** item. Point its data source at the Eventhouse's
+     KQL database (the one created in step 2 of provisioning).
+  2. Its item ID is in the browser's URL bar once you have it open —
+     something like
+     `.../operationsagents/46a2c551-1f9c-4a2d-9620-27c6a3a0524e`; the GUID
+     at the end is `<id>`.
+  3. From the repo root, on your own machine (this is a plain Fabric REST
+     call, not a VNet one):
+     ```powershell
+     .venv\Scripts\python.exe src\fleetops\setup\06_ops_agent.py --capture <id>
+     ```
+     This writes the real definition into
+     `artifacts/ops-agent/OperationsAgentV1.json`.
+  4. To push edited instructions from that file back up to the same agent
+     later, run `src/fleetops/setup/06_ops_agent.py --update <id>` the same
+     way (`--apply` only ever *creates* a brand-new agent — it's a no-op once
+     one is already recorded in `state.json`).
+  5. Back in the portal, click **Generate Playbook** on the agent, then
+     **Start** it — both are portal-only actions with no API equivalent.
 - **Delegated sign-in**: every setup/validation script must run under a real
   operator's own `az login` session, not a service principal — the
   Operations Agent inherits its creator's identity, and the workspace

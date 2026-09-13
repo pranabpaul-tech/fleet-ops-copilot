@@ -11,11 +11,14 @@ Not available in East US, not in sovereign clouds, not in CMK-encrypted
 workspaces — if creation fails with a region/policy error, that's most likely
 why, not a bug in this script.
 
-Same capture/apply workflow as setup/04_eventstream.py:
+Workflow:
   1. Author once in the portal (instructions, KQL data source, Generate
      Playbook, review the generated per-rule KQL in Query Insights).
   2. python 06_ops_agent.py --capture <opsAgentId>
-  3. python 06_ops_agent.py --apply
+  3. Edit artifacts/ops-agent/OperationsAgentV1.json locally if needed.
+  4. python 06_ops_agent.py --update <opsAgentId>   (an agent that already
+     exists — the common case) or --apply (create a brand new one from the
+     file, e.g. in a fresh environment).
 """
 from __future__ import annotations
 
@@ -54,6 +57,45 @@ def capture(client: FabricClient, workspace_id: str, ops_agent_id: str) -> None:
     logger.info("Captured real definition -> %s. Review it, then commit it.", DEFINITION_PATH)
 
 
+def update(client: FabricClient, workspace_id: str, ops_agent_id: str, state: StateStore) -> None:
+    """Push the local instructions/dataSources/actions/messageDestination onto
+    an EXISTING (portal-created) agent. Merges into its current live
+    definition rather than overwriting it wholesale — Fabric stores a
+    compiled `playbook` (from clicking Generate Playbook) and `shouldRun`
+    alongside the authored config, and this repo has no way to reconstruct
+    those if they're naively clobbered. Confirmed live: pushing a definition
+    with an empty playbook gets rejected outright once shouldRun is true, and
+    can silently reset the agent to Inactive with the real playbook cleared."""
+    raw = json.loads(DEFINITION_PATH.read_text(encoding="utf-8"))
+    if raw.get("_placeholder"):
+        raise RuntimeError(f"{DEFINITION_PATH} is still the placeholder shape — nothing real to push.")
+
+    result = client.call("POST", f"/workspaces/{workspace_id}/operationsAgents/{ops_agent_id}/getDefinition"
+                                  f"?format=OperationsAgentV1")
+    parts = result.get("definition", {}).get("parts", [])
+    platform_part = next(p for p in parts if p["path"] == ".platform")
+    config_part = next(p for p in parts if p["path"] == DEFINITION_ITEM_PATH)
+    live_cfg = decode_definition_part(config_part)
+
+    for key in ("instructions", "dataSources", "actions", "messageDestination"):
+        if key in raw.get("configuration", {}):
+            live_cfg["configuration"][key] = raw["configuration"][key]
+    # live_cfg["playbook"] and live_cfg["shouldRun"] are left exactly as
+    # fetched — those belong to the portal's Generate Playbook / Start actions.
+
+    client.call("POST", f"/workspaces/{workspace_id}/operationsAgents/{ops_agent_id}/updateDefinition", {
+        "definition": {
+            "parts": [
+                definition_part(DEFINITION_ITEM_PATH, live_cfg),
+                {"path": ".platform", "payload": platform_part["payload"], "payloadType": "InlineBase64"},
+            ],
+        },
+    })
+    state.merge("ops_agent", {"opsAgentId": ops_agent_id, "instructionsSet": True})
+    logger.info("Done. Pushed instructions/dataSources to Operations Agent %s.", ops_agent_id)
+    logger.info("If the instructions changed meaningfully, re-run Generate Playbook in the portal.")
+
+
 def apply(client: FabricClient, workspace_id: str, state: StateStore) -> None:
     raw = json.loads(DEFINITION_PATH.read_text(encoding="utf-8"))
     if raw.get("_placeholder"):
@@ -90,8 +132,9 @@ def apply(client: FabricClient, workspace_id: str, state: StateStore) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--apply", action="store_true")
-    mode.add_argument("--capture", metavar="OPS_AGENT_ID")
+    mode.add_argument("--apply", action="store_true", help="Create a brand new Operations Agent from the local file.")
+    mode.add_argument("--capture", metavar="OPS_AGENT_ID", help="Pull a portal-authored agent's real definition into the local file.")
+    mode.add_argument("--update", metavar="OPS_AGENT_ID", help="Push the local file's instructions/dataSources/actions onto an existing agent.")
     parser.add_argument("--skip-identity-check", action="store_true")
     args = parser.parse_args()
 
@@ -104,6 +147,8 @@ def main() -> None:
 
     if args.capture:
         capture(client, workspace_id, args.capture)
+    elif args.update:
+        update(client, workspace_id, args.update, state)
     else:
         apply(client, workspace_id, state)
 
