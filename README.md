@@ -129,20 +129,26 @@ or on macOS/Linux:
 .venv/bin/python src/fleetops/setup/05_network_policy.py --confirm
 ```
 
-All of these are plain Azure/Fabric REST calls, signed in as yourself — none
-of them need to run from inside the VNet, so your own machine (wherever you
-ran `azd provision` from) is fine. The one exception is step 8
-(`validate.e2e_flow`), which also exercises the Fabric workspace's *private*
-endpoint — for a fully accurate result, run that one from the jumpbox
-instead (`az container exec --resource-group <rg> --name ci-fleetops-jump
---container-name jumpbox --exec-command "python3 /path/to/e2e_flow.py"`, after
-copying the repo onto it).
+Most of these are plain Azure/Fabric REST calls, signed in as yourself — they
+don't need to run from inside the VNet, so your own machine (wherever you ran
+`azd provision` from) is fine. Two steps are the exception, because they
+specifically test or depend on the workspace's *private* endpoint from
+inside the network: `network_check.py` (step 3) and `e2e_flow.py` (step 8).
+Run those two from the jumpbox instead — copy the repo onto it once, then:
+
+```bash
+az container exec --resource-group <rg> --name ci-fleetops-jump \
+  --container-name jumpbox --exec-command "python3 /path/to/network_check.py"
+```
+
+(same pattern for `e2e_flow.py`). Running `network_check.py` from your own
+machine instead would just see public DNS and pass for the wrong reason.
 
 | # | Step | Script (path relative to repo root) |
 |---|---|---|
 | 1 | Flip two Fabric admin portal tenant settings (see **Manual steps**) | — |
-| 2 | Lock down the workspace to private access | `src/fleetops/setup/05_network_policy.py --confirm` |
-| 3 | Deploy the workspace-level Fabric private link | `./infra/deploy.ps1 -Wave 2` |
+| 2 | Deploy the workspace-level Fabric private link | `./infra/deploy.ps1 -Wave 2` |
+| 3 | Verify its DNS resolves privately from the jumpbox, **then** lock the workspace down to private-only access | `src/fleetops/validate/network_check.py`, then `src/fleetops/setup/05_network_policy.py --confirm` |
 | 4 | Deploy the Foundry hosted agent (grants it Kusto access automatically) | `src/fleetops/foundry/deploy_hosted_agent.py` |
 | 5 | Deploy the Bot Service | `./infra/deploy.ps1 -Wave 3` |
 | 6 | Publish the agent to Microsoft Teams | `src/fleetops/foundry/publish_teams.py` |
