@@ -129,31 +129,34 @@ or on macOS/Linux:
 .venv/bin/python src/fleetops/setup/05_network_policy.py --confirm
 ```
 
-Most of these are plain Azure/Fabric REST calls, signed in as yourself — they
-don't need to run from inside the VNet, so your own machine (wherever you ran
-`azd provision` from) is fine. Two steps are the exception, because they
-specifically test or depend on the workspace's *private* endpoint from
-inside the network: `network_check.py` (step 3) and `e2e_flow.py` (step 8).
-Run those two from the jumpbox instead — copy the repo onto it once, then:
+Some of these are plain Azure/Fabric **control-plane** REST calls, signed in
+as yourself — they don't need to run from inside the VNet, so your own
+machine (wherever you ran `azd provision` from) is fine (marked **local**
+below). The rest either test the workspace's *private* endpoint from inside
+the network, or call the Foundry account's own data-plane API — and the
+Foundry account has public access disabled from the start (it's
+VNet-injected), so those genuinely fail with `403 Public access is disabled`
+from anywhere but inside the VNet (marked **jumpbox** below). Run those from
+the jumpbox — copy the repo onto it once (`curl`+`tar`, since `git clone`
+doesn't reliably complete over `az container exec` — see the ACI jumpbox
+notes further down), then:
 
 ```bash
 az container exec --resource-group <rg> --name ci-fleetops-jump \
-  --container-name jumpbox --exec-command "python3 /path/to/network_check.py"
+  --container-name jumpbox --exec-command "python3 /path/to/script.py"
 ```
 
-(same pattern for `e2e_flow.py`). Running `network_check.py` from your own
-machine instead would just see public DNS and pass for the wrong reason.
-
-| # | Step | Script (path relative to repo root) |
-|---|---|---|
-| 1 | Flip two Fabric admin portal tenant settings (see **Manual steps**) | — |
-| 2 | Deploy the workspace-level Fabric private link | `./infra/deploy.ps1 -Wave 2` |
-| 3 | Verify its DNS resolves privately from the jumpbox, **then** lock the workspace down to private-only access | `src/fleetops/validate/network_check.py`, then `src/fleetops/setup/05_network_policy.py --confirm` |
-| 4 | Deploy the Foundry hosted agent (grants it Kusto access automatically) | `src/fleetops/foundry/deploy_hosted_agent.py` |
-| 5 | Deploy the Bot Service | `./infra/deploy.ps1 -Wave 3` |
-| 6 | Publish the agent to Microsoft Teams | `src/fleetops/foundry/publish_teams.py` |
-| 7 | Author the Operations Agent (see **Manual steps**) | `src/fleetops/setup/06_ops_agent.py --capture <id>` |
-| 8 | Validate everything end to end | `src/fleetops/validate/e2e_flow.py` |
+| # | Step | Where | Script (path relative to repo root) |
+|---|---|---|---|
+| 1 | Flip two Fabric admin portal tenant settings (see **Manual steps**) | — | — |
+| 2 | Deploy the workspace-level Fabric private link | local | `./infra/deploy.ps1 -Wave 2` |
+| 3a | Verify its DNS resolves privately | jumpbox | `src/fleetops/validate/network_check.py` |
+| 3b | Lock the workspace down to private-only access | local | `src/fleetops/setup/05_network_policy.py --confirm` |
+| 4 | Deploy the Foundry hosted agent (grants it Kusto access automatically) | jumpbox | `src/fleetops/foundry/deploy_hosted_agent.py` |
+| 5 | Deploy the Bot Service | local | `./infra/deploy.ps1 -Wave 3` |
+| 6 | Publish the agent to Microsoft Teams | jumpbox | `src/fleetops/foundry/publish_teams.py` |
+| 7 | Author the Operations Agent (see **Manual steps**) | local | `src/fleetops/setup/06_ops_agent.py --capture <id>` |
+| 8 | Validate everything end to end | jumpbox | `src/fleetops/validate/e2e_flow.py` |
 
 ## Manual steps required
 
