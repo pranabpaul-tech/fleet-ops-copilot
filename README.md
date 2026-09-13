@@ -164,11 +164,26 @@ az container exec --resource-group <rg> --name ci-fleetops-jump \
     If you haven't done an interactive `az login` on this particular jumpbox
     container, that grant will fail with `403 InsufficientPrivileges` (the
     deploy still succeeds); re-run just the grant from your own machine —
-    the failure message tells you exactly how. Separately, if this step
-    fails with a `ProvisioningError` that doesn't clear on retry, see
-    `deploy_hosted_agent.py`'s module docstring for the `--image`
-    build-and-push fallback (needs an Azure Container Registry — deploy
-    `infra/modules/foundry.bicep` with `enableContainerRegistry=true` first).
+    the failure message tells you exactly how.
+
+    Separately, if this step fails with a `ProvisioningError` that doesn't
+    clear on retry, fall back to building and pushing an image instead of
+    building from source:
+    1. Deploy `infra/modules/foundry.bicep` with `enableContainerRegistry=true`
+       (creates a private ACR).
+    2. `az acr update --name <acrName> --public-network-enabled true` —
+       **temporarily makes the registry publicly reachable.** ACR Tasks' own
+       build agent runs on Azure's general-purpose IP range, not yours, so
+       there's no narrower allowlist option than this for a registry that's
+       otherwise private-endpoint-only. Do this only for the few minutes the
+       build takes.
+    3. `az acr build --registry <acrName> --image fleet-incident-agent:v1 --platform linux/amd64 src/fleetops/foundry/hosted_agent`
+    4. `az acr update --name <acrName> --public-network-enabled false` —
+       **put it back.** Don't skip this.
+    5. `python deploy_hosted_agent.py --image <acrName>.azurecr.io/fleet-incident-agent:v1`
+
+    See `deploy_hosted_agent.py`'s module docstring for the same sequence
+    inline with the code that consumes it.
 
 ## Manual steps required
 
