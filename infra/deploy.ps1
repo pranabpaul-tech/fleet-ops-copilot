@@ -20,7 +20,7 @@
   ./deploy.ps1 -Wave 1
   # ... run src/fleetops/setup/01_workspace.py through 05_network_policy.py ...
   ./deploy.ps1 -Wave 2
-  # ... author + capture the Operations Agent, run mcp_tool.py/toolbox.py/deploy_hosted_agent.py ...
+  # ... run foundry/deploy_hosted_agent.py ...
   ./deploy.ps1 -Wave 3
 #>
 param(
@@ -53,8 +53,8 @@ function Write-State($state) {
 
 switch ($Wave) {
   1 {
-    Write-Host "== Wave 1: network, F8 capacity, tenant private link, Key Vault, monitoring, jumpbox, Foundry ==" -ForegroundColor Cyan
-    Write-Host "Make sure infra/main.bicepparam has real values (fabricAdminMembers, operatorPrincipalId, jumpbox creds, BYO Search/Storage/Cosmos IDs) before continuing." -ForegroundColor Yellow
+    Write-Host "== Wave 1: network, F8 capacity, Key Vault, monitoring, jumpbox, Foundry ==" -ForegroundColor Cyan
+    Write-Host "Make sure infra/main.bicepparam has real values (fabricAdminMembers, operatorPrincipalId, BYO Search/Storage/Cosmos IDs) before continuing." -ForegroundColor Yellow
 
     $outputs = az deployment sub create `
       --location (Select-String -Path "$PSScriptRoot/main.bicepparam" -Pattern "param location = '(.+)'").Matches.Groups[1].Value `
@@ -67,8 +67,8 @@ switch ($Wave) {
     Write-State $state
 
     Write-Host "`nWave 1 deployed. Outputs written to $StateFile under .wave1" -ForegroundColor Green
-    Write-Host "Next: run foundry-vendored/createCapHost.sh (from the jumpbox, or Git Bash / WSL) to create the Foundry capability host." -ForegroundColor Yellow
-    Write-Host "Then: Bastion onto the jumpbox and run setup/01_workspace.py through setup/04_eventstream.py, then setup/05_network_policy.py --confirm." -ForegroundColor Yellow
+    Write-Host "Next: run foundry-vendored/createCapHost.sh if the Foundry capability host didn't come up automatically (see infra/README.md)." -ForegroundColor Yellow
+    Write-Host "Then: az container exec into the jumpbox and run setup/01_workspace.py through setup/04_eventstream.py, then setup/05_network_policy.py --confirm." -ForegroundColor Yellow
   }
   2 {
     Write-Host "== Wave 2: workspace-level Fabric private link ==" -ForegroundColor Cyan
@@ -92,7 +92,7 @@ switch ($Wave) {
     $state['wave2'] = $outputs
     Write-State $state
     Write-Host "`nWave 2 deployed. Verify from the jumpbox: nslookup <workspaceId-no-dashes>.z<xy>.w.api.fabric.microsoft.com must resolve to a private IP (can take up to 24h after capacity creation)." -ForegroundColor Yellow
-    Write-Host "Then run setup/05_network_policy.py --confirm if you haven't already, then author + capture the Operations Agent, then mcp_tool.py --apply, toolbox.py, and deploy_hosted_agent.py." -ForegroundColor Yellow
+    Write-Host "Then run setup/05_network_policy.py --confirm if you haven't already, then foundry/deploy_hosted_agent.py." -ForegroundColor Yellow
   }
   3 {
     Write-Host "== Wave 3: bot service + Teams channel ==" -ForegroundColor Cyan

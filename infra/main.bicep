@@ -1,6 +1,6 @@
 // Fleet Ops Copilot — Wave 1
-// Network, F8 Fabric capacity, tenant-level Fabric private link, Key Vault,
-// monitoring, jumpbox + Bastion, and the VNet-injected Foundry account/project.
+// Network, F8 Fabric capacity, Key Vault, monitoring, a container-based
+// jumpbox, and the VNet-injected Foundry account/project.
 //
 // Deliberately NOT included here (see infra/README.md):
 //   - Fabric workspace, Eventhouse, Eventstream, Operations Agent — these are
@@ -35,13 +35,6 @@ param fabricAdminMembers array
 param operatorPrincipalId string
 
 param fabricCapacityName string = 'fleetopsf8'
-
-@description('Tenant-level Fabric private link requires tenant-administrator rights to create the Microsoft.PowerBI/privateLinkServicesForPowerBI resource. In a managed/corporate tenant where you only have subscription-level access, this fails with "forbidden — tenant administrator only". Default false so the deploy proceeds on workspace-level private link alone (Wave 2) — the documented fallback posture. Flip to true once a tenant admin has enabled the "Azure Private Link" tenant setting and granted the needed rights.')
-param deployTenantPrivateLink bool = false
-
-param jumpboxAdminUsername string
-@secure()
-param jumpboxAdminPassword string
 
 param foundryAiServicesBaseName string = 'fleetopsai'
 param foundryProjectName string = 'fleet-incident'
@@ -85,16 +78,6 @@ module capacity 'modules/fabric-capacity.bicep' = {
   }
 }
 
-module tenantPrivateLink 'modules/fabric-tenant-privatelink.bicep' = if (deployTenantPrivateLink) {
-  name: 'fabric-tenant-pl-deployment'
-  scope: rg
-  params: {
-    location: location
-    vnetId: network.outputs.vnetId
-    peSubnetId: network.outputs.peSubnetId
-  }
-}
-
 module keyVault 'modules/keyvault.bicep' = {
   name: 'keyvault-deployment'
   scope: rg
@@ -113,15 +96,12 @@ module monitoring 'modules/monitoring.bicep' = {
   }
 }
 
-module jumpbox 'modules/jumpbox.bicep' = {
+module jumpbox 'modules/aci-jumpbox.bicep' = {
   name: 'jumpbox-deployment'
   scope: rg
   params: {
     location: location
-    bastionSubnetId: network.outputs.bastionSubnetId
-    jumpboxSubnetId: network.outputs.jumpboxSubnetId
-    adminUsername: jumpboxAdminUsername
-    adminPassword: jumpboxAdminPassword
+    containerSubnetId: network.outputs.containerSubnetId
   }
 }
 
@@ -156,6 +136,18 @@ module operatorKvAccess 'modules/rbac.bicep' = {
   }
 }
 
+// The jumpbox's own identity needs write access on the Foundry account
+// (agent/toolbox registration) — Cognitive Services Contributor does NOT
+// cover this; it's a dataAction only Foundry Project Manager grants.
+module jumpboxFoundryAccess 'modules/aci-foundry-rbac.bicep' = {
+  name: 'jumpbox-foundry-rbac-deployment'
+  scope: rg
+  params: {
+    foundryAccountName: foundry.outputs.accountName
+    principalId: jumpbox.outputs.principalId
+  }
+}
+
 output resourceGroupName string = rg.name
 output vnetId string = network.outputs.vnetId
 output vnetName string = network.outputs.vnetName
@@ -163,9 +155,9 @@ output agentSubnetId string = network.outputs.agentSubnetId
 output agentSubnetName string = network.outputs.agentSubnetName
 output peSubnetId string = network.outputs.peSubnetId
 output peSubnetName string = network.outputs.peSubnetName
-output bastionSubnetId string = network.outputs.bastionSubnetId
-output jumpboxSubnetId string = network.outputs.jumpboxSubnetId
-output jumpboxVmName string = jumpbox.outputs.vmName
+output containerSubnetId string = network.outputs.containerSubnetId
+output jumpboxContainerGroupName string = jumpbox.outputs.containerGroupName
+output jumpboxPrincipalId string = jumpbox.outputs.principalId
 output fabricCapacityId string = capacity.outputs.capacityId
 output fabricCapacityName string = capacity.outputs.capacityName
 output keyVaultName string = keyVault.outputs.vaultName

@@ -1,213 +1,174 @@
 # Fleet Ops Copilot
 
-Real-time bus telemetry on Microsoft Fabric (Eventstream → Eventhouse), a
-proactive Operations Agent, and a conversational Foundry agent in Teams — on
-an F8 capacity behind Fabric Private Link, with the Foundry agent **VNet-injected**
-into that same private network.
+Real-time bus fleet telemetry, ingested and analyzed on Microsoft Fabric, watched
+proactively by a Fabric Operations Agent, and explorable conversationally through
+a Foundry-hosted agent published to Microsoft Teams — all on a Fabric F8 capacity
+with the conversational agent VNet-injected and the Fabric workspace reachable
+over a private link.
 
-This is the implementation of the plan discussed in chat: Bicep for everything
-that's ARM-native, Python for the Fabric workspace items and Foundry agent
-setup that aren't. Phases 0–6 are live and deployed (see the phases below) —
-telemetry is flowing end to end and the hosted agent answers real queries
-against it; phases 7–8 (Teams publish, final validation) are next.
+## What it does
 
-## Layout
+- **Ingests** live bus telemetry from Fabric's built-in "Buses" sample source
+  through an Eventstream into a Fabric Eventhouse (KQL database), flattening
+  raw events into a typed `BusTelemetry` table.
+- **Monitors** that table continuously with a Fabric **Operations Agent**,
+  which detects delay incidents, dwell/holding incidents, and vehicles that
+  stop reporting, and sends an alert for each one.
+- **Answers questions** through a **Foundry-hosted conversational agent**,
+  published to Microsoft Teams, that queries `BusTelemetry` directly via its
+  own custom Kusto tool to ground its answers in live data.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Fabric["Microsoft Fabric — F8 capacity"]
+        direction TB
+        Buses(["Buses sample source"]) --> ES["Eventstream"]
+        ES --> Raw[("BusTelemetryRaw")]
+        Raw -- "update policy" --> Flat[("BusTelemetry")]
+        Flat --> OpsAgent["Operations Agent"]
+    end
+
+    subgraph VNet["Azure VNet"]
+        direction TB
+        subgraph AgentSubnet["snet-agent"]
+            HostedAgent["Foundry hosted agent<br/>(custom Kusto tool)"]
+        end
+        subgraph ContainerSubnet["snet-container"]
+            Jumpbox["Jumpbox (Container Instance)"]
+        end
+        subgraph PeSubnet["snet-pe"]
+            PE1["Fabric workspace<br/>private endpoint"]
+            PE2["Key Vault<br/>private endpoint"]
+        end
+    end
+
+    HostedAgent -- "queries live data" --> Flat
+    OpsAgent -- "alert" --> Recipient(["Teams / email recipient"])
+    HostedAgent --> Bot["Bot Service"]
+    Bot -- "publish" --> Teams(["Microsoft Teams"])
+    Jumpbox -. "management &amp; validation" .-> Fabric
 ```
-infra/           Bicep — 3 waves, see infra/README.md
-src/fleetops/    Python — setup/, foundry/, actions/, validate/
-artifacts/       KQL, Eventstream/Operations Agent definition templates
-state.json       created at runtime — the seam between Bicep outputs and
-                 Python-created resource IDs. Never commit real values from
-                 a live deployment; .gitignore covers it.
+
+- **Microsoft Fabric** — an F8 capacity hosts the workspace, Eventhouse, and
+  Operations Agent. The workspace is reachable over a private link
+  (`infra/wave2-fabric-privatelink.bicep`).
+- **Azure VNet** — three subnets: `snet-agent` (the Foundry account is
+  VNet-injected here), `snet-pe` (private endpoints for the Fabric workspace
+  and Key Vault), and `snet-container` (a jumpbox reachable via
+  `az container exec` — no RDP/Bastion needed).
+- **Foundry hosted agent** — real application code (Microsoft Agent
+  Framework), not a declarative prompt agent. Its one tool queries the
+  Eventhouse directly using its own granted identity.
+- **Bot Service + Teams** — the hosted agent is published to Teams through a
+  Bot Service registration.
+
+## Deploy
+
+### Prerequisites
+
+- [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) (`azd`) and the Azure CLI (`az`), both signed in
+  (`azd auth login`, `az login`) as a real user — not a service principal.
+  Several steps (creating the Operations Agent, the network lockdown) inherit
+  their creator's identity and require a delegated human sign-in.
+- Python 3.11+.
+- An existing Azure AI Search service, Storage account, and Cosmos DB account
+  — Foundry's standard agent setup requires all three. If you don't have
+  them, `infra/wave0-byo-resources.bicep` creates minimal ones:
+
+  ```bash
+  az deployment group create --resource-group <rg> --template-file infra/wave0-byo-resources.bicep
+  ```
+
+- A region that isn't `eastus` (the Operations Agent isn't available there)
+  and that supports Fabric capacities and Foundry VNet injection.
+
+### 1. Configure
+
+```bash
+git clone <this-repo>
+cd fleet-ops-copilot
+cp .env.example .env   # fill in values
 ```
 
-## Before you start
+Fill in `infra/main.bicepparam`: your Fabric admin UPN(s), your own operator
+object ID (`az ad signed-in-user show --query id -o tsv`), and the resource
+IDs of the AI Search / Storage / Cosmos DB accounts from the prerequisites
+step.
 
-1. `python -m venv .venv && .venv\Scripts\activate` (Windows) then
-   `pip install -r requirements.txt`.
-2. `copy .env.example .env` and fill in what you already know (the rest gets
-   filled in as you go, via `state.json`).
-3. Read `infra/README.md`'s prerequisites section — several things (tenant
-   settings, resource provider registration) are portal-only and have to
-   happen before Wave 1.
+### 2. Provision the core infrastructure
 
-## Phases
+```bash
+azd provision
+```
 
-| # | What | Where |
+This deploys the VNet, F8 Fabric capacity, Key Vault, monitoring, the
+jumpbox, and the VNet-injected Foundry account/project — then a
+`postprovision` hook automatically creates the Fabric workspace, Eventhouse,
+KQL schema, and Eventstream, so telemetry starts flowing right after
+`azd provision` finishes.
+
+### 3. Finish the remaining stages
+
+The rest can't be folded into one atomic deployment — each stage needs an ID
+or a manual step that only exists after the previous one runs. Run these in
+order (from the jumpbox: `az container exec --resource-group <rg> --name
+ci-fleetops-jump --container-name jumpbox --exec-command "..."`, or from any
+machine signed in with `az login`, for anything that only needs a delegated
+Azure/Fabric REST call rather than direct network access):
+
+| # | Step | Command |
 |---|---|---|
-| 0 | Tenant prerequisites (Fabric admin portal, manual) | `infra/README.md` |
-| 1 | Wave 1 Bicep: network, F8 capacity, tenant PL, Key Vault, monitoring, jumpbox, Foundry | `infra/main.bicep` + `deploy.ps1 -Wave 1` |
-| 2 | Onto the jumpbox — everything from here runs inside the VNet | Bastion |
-| 3 | Fabric workspace, Eventhouse, KQL schema, Eventstream | `src/fleetops/setup/01_workspace.py` → `04_eventstream.py` |
-| 4 | Wave 2 Bicep (workspace private link) — done; network lockdown blocked on a tenant admin toggle (see below) | `deploy.ps1 -Wave 2`, then `setup/05_network_policy.py --confirm` |
-| 5 | Operations Agent — created + instructions live; Teams app/recipient/start still manual | `setup/06_ops_agent.py` |
-| 6 | Foundry hosted agent + custom Kusto function tool (risk #1 resolved — see below) | `deploy_hosted_agent.py` (`mcp_tool.py`/`toolbox.py` are historical — MCP path doesn't work here) |
-| 7 | Wave 3 Bicep (bot) + Teams publish | `deploy.ps1 -Wave 3`, then `foundry/publish_teams.py` |
-| 8 | Validate | `python -m fleetops.validate.e2e_flow` |
+| 1 | Flip two Fabric admin portal tenant settings (see **Manual steps**) | — |
+| 2 | Lock down the workspace to private access | `python -m fleetops.setup.05_network_policy --confirm` |
+| 3 | Deploy the workspace-level Fabric private link | `./infra/deploy.ps1 -Wave 2` |
+| 4 | Deploy the Foundry hosted agent (grants it Kusto access automatically) | `python -m fleetops.foundry.deploy_hosted_agent` |
+| 5 | Deploy the Bot Service | `./infra/deploy.ps1 -Wave 3` |
+| 6 | Publish the agent to Microsoft Teams | `python -m fleetops.foundry.publish_teams` |
+| 7 | Author the Operations Agent (see **Manual steps**) | `python -m fleetops.setup.06_ops_agent --capture <id>` |
+| 8 | Validate everything end to end | `python -m fleetops.validate.e2e_flow` |
 
-Run every `setup/*.py` and `foundry/deploy_hosted_agent.py` / `06_ops_agent.py` from the
-jumpbox, signed in as a real operator (`az login`) — not a service principal.
-The Operations Agent inherits its creator's identity; `common/auth.py`'s
-`assert_delegated_identity()` enforces this and fails fast otherwise.
+## Manual steps required
 
-## Risk #1 — resolved, and the answer is instructive
+These can't be scripted — they need a human in a portal, or a real
+interactive sign-in:
 
-The original open question: is Fabric's Eventhouse MCP endpoint reachable,
-and authenticable, from a VNet-injected Foundry agent talking to a
-workspace-private-link-secured workspace? **Confirmed live: no, not via
-MCP/Toolbox.** The chain of findings, in order:
+- **Fabric admin portal tenant settings**: enable **Azure Private Link** and
+  **Configure workspace-level inbound network rules**, and whatever
+  Copilot / Azure OpenAI tenant settings the Operations Agent needs.
+- **Resource provider registration**: `Microsoft.Fabric`,
+  `Microsoft.BotService`, `Microsoft.App`, `Microsoft.CognitiveServices`,
+  `Microsoft.Search`, `Microsoft.DocumentDB`, `Microsoft.Storage`,
+  `Microsoft.KeyVault`. Re-register `Microsoft.Fabric` again the first time
+  you use workspace-level private link — it has its own registration flag.
+- **Authoring the Operations Agent**: create it once in the Fabric portal
+  (point it at the Eventhouse's KQL database), then run
+  `setup/06_ops_agent.py --capture <id>` to pull its real definition into
+  this repo — its schema isn't fully documented, so this repo captures it
+  from a live one rather than guessing. You can then push updated
+  instructions to it via `setup/06_ops_agent.py --apply`, but the compiled
+  **playbook** (from clicking **Generate Playbook**) and actually **starting**
+  the agent are portal-only actions with no API equivalent.
+- **Delegated sign-in**: every setup/validation script must run under a real
+  operator's own `az login` session, not a service principal — the
+  Operations Agent inherits its creator's identity, and the workspace
+  network lockdown is sensitive enough that it should always have a human's
+  fingerprints on it.
 
-1. `project_connection_id` on an MCP tool must be the connection's **full ARM
-   resource ID**, not its bare name — passing just the name is a silent bug,
-   not a validation error.
-2. The connection's `audience` is `https://api.fabric.microsoft.com` (matching
-   this endpoint's own host), not `https://analysis.windows.net/powerbi/api`
-   from the generic MCP docs example (that was for a different Fabric path).
-3. `UserEntraToken` auth fails outside a real Teams/interactive session with
-   `"User identity authentication ... requires a delegated Microsoft Entra
-   user context"` — switched to `AgenticIdentityToken` (the agent's own
-   identity; granted it `Viewer` on the Fabric workspace to match).
-4. Past all of that, the call still fails — with `"Name or service not
-   known (api.fabric.microsoft.com:443)"`. **DNS resolution itself fails**
-   from within Foundry's own MCP-calling infrastructure. A network-isolated
-   Foundry account apparently can't reach *any* public-internet MCP endpoint
-   this way, only ones exposed through an actual private endpoint — matching
-   what the docs hinted ("private MCP requires a dedicated MCP subnet for a
-   *self-hosted* server") but had never stated for a third party's public
-   endpoint.
+## Repo layout
 
-**The fix, live and verified**: skip MCP/Toolbox entirely. `foundry/hosted_agent/main.py`
-has a plain `@tool`-decorated function (`query_bus_telemetry`) that calls
-`azure-kusto-data` directly, in-process, using the agent's own identity. This
-works because the agent's *own container code* has normal outbound
-networking (it's how it reaches the model service at all) — the failure was
-specific to Foundry's separate, more restricted MCP-proxy component, not the
-agent's own network path. Verified end to end: the agent generated its own
-KQL, queried live Eventhouse data, and gave a correct grounded answer citing
-real telemetry.
-
-`mcp_tool.py` and `toolbox.py` are kept as-is for the diagnostic trail (their
-module docstrings tell this whole story) but are no longer part of the
-working path — `deploy_hosted_agent.py` no longer depends on either.
-
-## Agent shape: MAF hosted agent, not a Prompt Agent
-
-The Fleet Incident Agent is a **hosted agent** — real application code
-(`foundry/hosted_agent/main.py`, using Microsoft Agent Framework's
-`FoundryChatClient` + a custom function tool) packaged as a container and
-deployed via `foundry/deploy_hosted_agent.py`, not a `PromptAgentDefinition`
-created via `agents.create_version()`. Confirmed against a live
-private-network reference deployment in this same subscription
-([`pranabpaul-tech/foundry-iq-v2`](https://github.com/pranabpaul-tech/foundry-iq-v2)),
-which also confirmed `wave3-bot.bicep` and `publish_teams.py` need no changes
-for this — the Teams-publish flow is the same regardless of Prompt vs.
-hosted agent.
-
-## ACI jumpbox — `az container exec`, no RDP needed
-
-`infra/modules/aci-jumpbox.bicep` adds a Container Instance in a new
-`snet-container` subnet (delegated to `Microsoft.ContainerInstance/containerGroups`),
-reachable via `az container exec` — the Azure control plane, not a network
-path, so it works the same whether the caller is a human or an agent.
-Mirrors `pranabpaul-tech/foundry-iq-v2`'s own jumpbox pattern. Its
-system-assigned identity needs **Foundry Project Manager** on the Foundry
-account (confirmed live: `Cognitive Services Contributor` does *not* cover
-agent/toolbox writes — that role grants `Microsoft.CognitiveServices/*` as a
-**dataAction**, which does). Bootstrap notes: `az container exec` has no
-shell behind it (arguments are split on whitespace, no quoting respected,
-5000-char command limit) — `git clone` doesn't reliably complete over it, so
-pull the repo via `curl`+`tar` from a public GitHub archive URL instead, and
-use `scripts/write_b64_file.py` (two plain argv tokens, no whitespace) to
-write file content that would otherwise need shell redirection.
-
-## `api.fabric.microsoft.com` doesn't resolve inside this VNet — corrects the risk #1 diagnosis
-
-Running Phase 4 turned up a real explanation for the DNS failure risk #1
-originally blamed on Foundry's MCP-calling infrastructure being unable to
-reach public endpoints. `api.fabric.microsoft.com` publicly CNAMEs through
-`api.powerbi.com` → `api.privatelink.analysis.windows.net` — and
-`privatelink.analysis.windows.net` is exactly one of the three private DNS
-zones `infra/modules/fabric-tenant-privatelink.bicep` (Wave 1's tenant-level
-Fabric private link) creates and links into this VNet. Once that zone is
-linked, Azure DNS treats it as authoritative for the whole zone inside the
-VNet — and it apparently only holds the tenant-specific record, not a bare
-`api` one, so the CNAME chain dead-ends and the lookup fails for *any*
-VNet-resident caller, confirmed both from the ACI jumpbox and (by
-inference — same VNet, same `snet-agent` injection) the Foundry hosted
-agent's MCP path. The custom-tool fix for risk #1 is still correct — it just
-wasn't a Foundry-specific restriction, it's this VNet's own DNS shadowing
-`api.fabric.microsoft.com` for every VNet-injected resource. Practical
-consequence: any script that calls the plain Fabric REST API (not a
-workspace- or item-scoped private-linked hostname) — `setup/05_network_policy.py`,
-`setup/06_ops_agent.py`, tenant-settings calls — has to run from *outside*
-the VNet (a normal signed-in machine), not from the jumpbox. Everything that
-only needs VNet-scoped access (Kusto queries against the Eventhouse's own
-`queryServiceUri`, the hosted agent's own tool calls) is unaffected.
-
-## Operations Agent — real schema differs from the placeholder guess
-
-`setup/06_ops_agent.py`'s `DEFINITION_ITEM_PATH` originally guessed
-`"OperationsAgentV1.json"` as the definition part name — a live `--capture`
-against a portal-authored agent (`FleetOperationsMonitor`) showed the real
-part is `"Configurations.json"`, shaped as
-`{"$schema": ..., "configuration": {"instructions": "", "dataSources": {<kqlDatabaseId>: {"id", "type": "KustoDatabase", "workspaceId"}}, "actions": {}}, "shouldRun": false}`
-— notably no `recipients` field at all; Teams-channel wiring for
-notifications lives outside this JSON (install the Fabric Operations Agent
-Teams app, set a channel as recipient — portal-only, not exposed here).
-Also confirmed live: `EngineTemperatureC`, `BatteryPercent`, `SpeedKph`,
-`OccupancyPercent`, `Latitude`, `Longitude` are always null in the built-in
-"Buses" sample source — only `EventTime`, `VehicleId`, `RouteId`,
-`DelayMinutes`, `Status`, `IngestionTime`, `TimeToNextStationSeconds`
-actually populate, so `artifacts/ops-agent/OperationsAgentV1.json`'s
-detection instructions key off those rather than the null fields. The
-`instructions` field can be pushed via `updateDefinition` over the REST API
-(no portal step needed for that part) — only "Generate Playbook" (portal-side
-rule preview), the Teams app install/channel, and flipping `shouldRun: true`
-to actually start the agent remain manual.
-
-## Second risk, found via a related community repo
-
-[`anihitk07/foundry-hosted-agents-e2e-samples`](https://github.com/anihitk07/foundry-hosted-agents-e2e-samples)
-validated hosted Foundry agents across the same network postures this project
-uses, in the same class of environment (a Microsoft-internal "MCAPS" tenant —
-we're in one too: `MngEnvMCAP072730`). Two of their findings apply directly:
-
-- **Cosmos DB governance is a non-issue for us, not a blocker.** Their MCAPS
-  tenant enforces an Azure Policy that silently reverts
-  `publicNetworkAccess=Enabled` on Cosmos DB — this broke their *public*
-  BYO-Cosmos posture. Our posture wants Cosmos private anyway (behind the
-  private endpoint Wave 1 sets up), so this policy, if it also applies here,
-  works with us rather than against us.
-- **New risk: interactive sign-in from the jumpbox may be blocked.** They
-  documented `azd`'s device-code sign-in getting rejected by Conditional
-  Access ("your admin requires the device requesting access to be managed by
-  Microsoft") in one MCAPS tenant, and separately that the beta
-  `azure.ai.agents` extension has rejected a jumpbox VM's managed-identity
-  token against a private Foundry project. Conditional Access policies
-  requiring a managed device are typically enforced at the Entra token layer,
-  not per-CLI, so this could affect `foundry/deploy_hosted_agent.py`'s `az login` /
-  `DefaultAzureCredential` flow too, not just `azd`. If Phase 6 fails on sign-in
-  rather than on the MCP call itself, this is the first thing to check —
-  try an interactive Bastion RDP session with a real browser sign-in before
-  concluding the MCP path (risk #1) is what's broken.
-
-## Two things this repo deliberately doesn't do
-
-- **No custom bot host.** `infra/wave3-bot.bicep` uses Foundry's native
-  `SingleTenant` + agent-identity pattern, not a hand-rolled Container App
-  running `botbuilder-*`. Foundry's publish flow reaches the same Teams
-  surface with no container to run.
-- **No Fabric Data Agent.** Kusto sources (which Eventhouse is) aren't
-  supported for Fabric Data Agents under private link, so the conversational
-  path goes through the remote Eventhouse MCP tool only.
-
-## Capture workflows
-
-Three files in `artifacts/` are placeholders with a `_placeholder: true`
-marker, because their real shape isn't published anywhere — Fabric's
-built-in "Buses" sample source's event schema, the Eventstream definition
-JSON, and the `OperationsAgentV1` definition schema. Each has a matching
-script with a `--capture` mode: author the thing once in the Fabric portal,
-then pull its real definition down over the placeholder. See
-`setup/04_eventstream.py` and `setup/06_ops_agent.py`.
+```
+infra/           Bicep — 3 waves (see infra/README.md), plus the ACI jumpbox
+                 and Foundry account/project
+infra/hooks/     azd postprovision hooks — run the Fabric pipeline setup
+                 scripts automatically after `azd provision`
+src/fleetops/    Python — setup/ (Fabric items), foundry/ (hosted agent +
+                 Teams publish), actions/ (approval-gated operations),
+                 validate/ (smoke tests + full e2e check)
+artifacts/       KQL schema, Eventstream definition, Operations Agent
+                 instructions
+state.json       created at runtime — the seam between Bicep outputs and
+                 Python-created resource IDs. Never commit real values;
+                 .gitignore covers it.
+```

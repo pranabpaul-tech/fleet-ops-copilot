@@ -76,6 +76,24 @@ def get_token_provider() -> TokenProvider:
     return _provider
 
 
+def get_tenant_id() -> str:
+    """Shell out to `az account show` — reused by anything that needs to build
+    a KQL `aadapp=<appId>;<tenantId>` viewer principal string."""
+    import shutil
+    import subprocess
+
+    az_path = shutil.which("az")
+    if az_path is None:
+        raise RuntimeError("Azure CLI not found on PATH.")
+    result = subprocess.run(
+        [az_path, "account", "show", "--query", "tenantId", "-o", "tsv"],
+        capture_output=True, text=True, timeout=20,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        raise RuntimeError(f"Could not resolve tenant ID via az CLI: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
 def assert_delegated_identity() -> None:
     """Raise if the current credential resolves to an app-only (service principal)
     identity rather than a human's delegated one.

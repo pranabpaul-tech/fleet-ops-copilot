@@ -1,28 +1,16 @@
 #!/usr/bin/env python
 """Package foundry/hosted_agent/ as a container and deploy it as a Foundry
-hosted agent — the MAF pattern, replacing the retired Prompt Agent
-(foundry/agent.py).
+hosted agent (the MAF pattern) — a real Python app with a custom Kusto tool,
+not a declarative Prompt Agent.
 
-Uses the SDK code-upload path (`create_version_from_code` +
-`CodeDependencyResolution.REMOTE_BUILD`, confirmed against Microsoft's own
-04-foundry-toolbox sample) rather than build-your-own-container-and-push-to-
-ACR: we deliberately didn't provision an ACR in Wave 1 (skipped along with
-Container Registry — see modules/foundry.bicep), so this path avoids needing
-one. A live private-network reference deployment
-(pranabpaul-tech/foundry-iq-v2, same subscription) instead builds and pushes
-its own image via `az acr build` and registers hosted agents with a raw
-`POST .../agents/{name}/versions` body of `{"definition": {"kind": "hosted",
-"container_configuration": {"image": ...}, ...}}` plus a required
-`Foundry-Features: HostedAgents=V1Preview,...` header — if REMOTE_BUILD fails
-in this network-isolated project (a real possibility this hasn't been tested
-against), that's the documented fallback, but it needs an ACR we don't have.
+Uses the SDK code-upload path (`create_version_from_code` with
+`CodeDependencyResolution.REMOTE_BUILD`) rather than build-your-own-container-
+and-push-to-ACR, since this project doesn't provision a Container Registry.
 
-RISK #1 UPDATE: this no longer uses the Toolbox/MCP path (see hosted_agent/
-main.py's module docstring for why — confirmed live that Foundry's MCP-calling
-infrastructure can't reach a public internet MCP endpoint from a
-network-isolated account). It now passes EVENTHOUSE_QUERY_URI and
-EVENTHOUSE_DATABASE_NAME so the agent's custom function tool can query Kusto
-directly, in-process. toolbox.py / state.json['toolbox'] are no longer required.
+Grants the deployed agent's own identity read access to the Fabric workspace
+and its Kusto database — see `_grant_agent_data_access` below — so its
+`query_bus_telemetry` tool (in hosted_agent/main.py) can query the Eventhouse
+directly, in-process, using its own credentials.
 """
 from __future__ import annotations
 
@@ -35,7 +23,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from fleetops.common.auth import get_tenant_id
 from fleetops.common.config import StateStore, get_settings
+from fleetops.common.fabric_client import FabricClient
+from fleetops.common.graph_client import resolve_service_principal_app_id
+from fleetops.common.kusto_client import EventhouseKustoClient
 from fleetops.common.logging_setup import setup_logging
 from fleetops.foundry._rest import FoundryAgentRest, project_endpoint
 
@@ -152,7 +144,30 @@ def deploy(model_name: str) -> None:
         "principalId": identity.get("principal_id"),
         "activityEndpoint": rest.activity_protocol_endpoint(HOSTED_AGENT_NAME),
     })
+
+    _grant_agent_data_access(state, identity.get("principal_id"), query_uri, database_name)
     logger.info("Done. state.json['foundry_agent'] updated. Next: infra/wave3-bot.bicep, then foundry/publish_teams.py.")
+
+
+def _grant_agent_data_access(state: StateStore, agent_principal_id: str, query_uri: str, database_name: str) -> None:
+    """The hosted agent's custom query_bus_telemetry tool needs its own
+    identity to have Fabric workspace Viewer (so the workspace's Kusto engine
+    accepts the connection at all) and Kusto database Viewer (so it can
+    actually read table data) — both idempotent, safe to re-run."""
+    workspace_id = state.output("workspace", "workspaceId")
+
+    fabric = FabricClient()
+    fabric.grant_workspace_role(workspace_id, agent_principal_id, "ServicePrincipal", "Viewer")
+    logger.info("Granted hosted agent Viewer on Fabric workspace %s.", workspace_id)
+
+    app_id = resolve_service_principal_app_id(agent_principal_id)
+    tenant_id = get_tenant_id()
+    kusto = EventhouseKustoClient(query_uri, database_name)
+    try:
+        kusto.grant_database_viewer(app_id, tenant_id)
+        logger.info("Granted hosted agent (appId %s) Viewer on database %s.", app_id, database_name)
+    finally:
+        kusto.close()
 
 
 def main() -> None:

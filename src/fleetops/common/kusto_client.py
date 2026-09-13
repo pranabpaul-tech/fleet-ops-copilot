@@ -28,6 +28,13 @@ class EventhouseKustoClient:
         logger.info("KQL mgmt: %s", command.strip().splitlines()[0][:120])
         return self._client.execute_mgmt(self.database_name, command)
 
+    def grant_database_viewer(self, app_id: str, tenant_id: str) -> None:
+        """Grant a service principal (by app ID, not object ID) read access to
+        this database. Idempotent — re-granting an existing principal is a
+        no-op, not an error."""
+        principal = f"aadapp={app_id};{tenant_id}"
+        self.execute_mgmt(f".add database ['{self.database_name}'] viewers ('{principal}')")
+
     def execute_query(self, query: str):
         return self._client.execute_query(self.database_name, query)
 

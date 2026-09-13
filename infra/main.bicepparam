@@ -16,12 +16,6 @@ param operatorPrincipalId = '3329059e-d368-43cf-85e2-44691c1c1bbc'
 
 param fabricCapacityName = 'fleetopsf8'
 
-param jumpboxAdminUsername = 'fleetopsadmin'
-// Read from an env var at deploy time rather than written here as a literal —
-// set FLEETOPS_JUMPBOX_PASSWORD before deploying. Generated value lives in
-// .secrets/jumpbox-admin-password.txt (gitignored, never commit it).
-param jumpboxAdminPassword = readEnvironmentVariable('FLEETOPS_JUMPBOX_PASSWORD')
-
 param foundryAiServicesBaseName = 'fleetopsai'
 param foundryProjectName = 'fleet-incident'
 param foundryModelName = 'gpt-4.1'

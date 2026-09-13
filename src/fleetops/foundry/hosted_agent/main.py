@@ -1,24 +1,12 @@
 # Copyright (c) Microsoft. All rights reserved.
 """Fleet Incident Agent — MAF hosted agent.
 
-This is real application code, packaged as a container and deployed to
-Foundry Agent Service (not a Prompt Agent definition) — see
-foundry/deploy_hosted_agent.py. Pattern confirmed against Microsoft's own
-04-foundry-toolbox sample (foundry-samples repo) and a live private-network
-reference deployment (pranabpaul-tech/foundry-iq-v2, same subscription).
-
-RISK #1 RESOLUTION: tools originally came from a Foundry Toolbox wrapping the
-Fabric Eventhouse MCP endpoint (Microsoft's documented pattern for MAF hosted
-agents). Confirmed LIVE that this doesn't work: Foundry's own MCP-calling
-infrastructure can't resolve api.fabric.microsoft.com at all
-("Name or service not known") — a network-isolated Foundry account can't
-reach an arbitrary public-internet MCP endpoint, only ones exposed through an
-actual private endpoint, and Fabric's global MCP gateway isn't one we have.
-This is a different failure from the agent's own container code, which DOES
-have normal outbound networking (it's how the container reaches the model
-service at all) — so the fix is a plain custom function tool that queries
-Kusto directly from the agent's own process, not through Foundry's separate
-MCP proxy. No MCP, no Toolbox, just azure-kusto-data called in-process.
+Real application code, packaged as a container and deployed to Foundry Agent
+Service (not a declarative Prompt Agent definition) — see
+foundry/deploy_hosted_agent.py. Its one tool, `query_bus_telemetry`, calls
+`azure-kusto-data` directly against the Eventhouse from the agent's own
+process — no MCP, no Toolbox — using the identity granted to it by
+`deploy_hosted_agent.py`.
 
 FOUNDRY_PROJECT_ENDPOINT and AZURE_AI_MODEL_DEPLOYMENT_NAME are injected by
 the platform / set at registration time. EVENTHOUSE_QUERY_URI and

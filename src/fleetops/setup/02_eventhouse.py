@@ -15,8 +15,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from fleetops.common.auth import get_tenant_id
 from fleetops.common.config import StateStore, get_settings
 from fleetops.common.fabric_client import FabricClient
+from fleetops.common.graph_client import resolve_service_principal_app_id
+from fleetops.common.kusto_client import EventhouseKustoClient
 from fleetops.common.logging_setup import setup_logging
 
 logger = setup_logging(__name__)
@@ -84,6 +87,29 @@ def main() -> None:
         "ingestionServiceUri": ingest_uri,
     })
     logger.info("Done. state.json['eventhouse'] updated. queryServiceUri=%s", query_uri)
+
+    _grant_jumpbox_access(state, query_uri, database["displayName"])
+
+
+def _grant_jumpbox_access(state: StateStore, query_uri: str, database_name: str) -> None:
+    """The jumpbox's own identity needs to query the Eventhouse directly for
+    validate/smoke_kql.py and manual troubleshooting — grant it once, here,
+    rather than as a one-off manual step."""
+    jumpbox_principal_id = state.get("wave1", {}).get("jumpboxPrincipalId", {})
+    jumpbox_principal_id = jumpbox_principal_id.get("value") if isinstance(jumpbox_principal_id, dict) else jumpbox_principal_id
+    if not jumpbox_principal_id:
+        logger.warning("No wave1.jumpboxPrincipalId in state.json — skipping the jumpbox's Kusto access grant. "
+                        "Grant it manually if validate/smoke_kql.py fails with 403 from the jumpbox.")
+        return
+
+    app_id = resolve_service_principal_app_id(jumpbox_principal_id)
+    tenant_id = get_tenant_id()
+    client = EventhouseKustoClient(query_uri, database_name)
+    try:
+        client.grant_database_viewer(app_id, tenant_id)
+        logger.info("Granted jumpbox (appId %s) Viewer on database %s.", app_id, database_name)
+    finally:
+        client.close()
 
 
 if __name__ == "__main__":

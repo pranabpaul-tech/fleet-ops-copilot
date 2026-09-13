@@ -67,6 +67,14 @@ class FabricClient:
             raise FabricApiError(resp)
         return resp
 
+    def grant_workspace_role(self, workspace_id: str, principal_id: str, principal_type: str, role: str) -> None:
+        """Idempotent — Fabric returns 200 for a principal that already has
+        this role rather than erroring."""
+        self.call("POST", f"/workspaces/{workspace_id}/roleAssignments", {
+            "principal": {"id": principal_id, "type": principal_type},
+            "role": role,
+        })
+
     def call(self, method: str, path: str, json_body: Any = None, *, base: str = FABRIC_API_ROOT) -> dict[str, Any]:
         """Call an endpoint and transparently follow the LRO pattern if it returns 202."""
         resp = self.request(method, path, json_body, base=base)
