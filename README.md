@@ -152,11 +152,23 @@ az container exec --resource-group <rg> --name ci-fleetops-jump \
 | 2 | Deploy the workspace-level Fabric private link | local | `./infra/deploy.ps1 -Wave 2` |
 | 3a | Verify its DNS resolves privately | jumpbox | `src/fleetops/validate/network_check.py` |
 | 3b | Lock the workspace down to private-only access | local | `src/fleetops/setup/05_network_policy.py --confirm` |
-| 4 | Deploy the Foundry hosted agent (grants it Kusto access automatically) | jumpbox | `src/fleetops/foundry/deploy_hosted_agent.py` |
+| 4 | Deploy the Foundry hosted agent[^1] | jumpbox | `src/fleetops/foundry/deploy_hosted_agent.py` |
 | 5 | Deploy the Bot Service | local | `./infra/deploy.ps1 -Wave 3` |
 | 6 | Publish the agent to Microsoft Teams | jumpbox | `src/fleetops/foundry/publish_teams.py` |
 | 7 | Author the Operations Agent (see **Manual steps**) | local | `src/fleetops/setup/06_ops_agent.py --capture <id>` |
 | 8 | Validate everything end to end | jumpbox | `src/fleetops/validate/e2e_flow.py` |
+
+[^1]: This step also grants the new agent's identity Fabric workspace/Kusto
+    access, which needs a delegated human session — the jumpbox's own
+    identity only has enough Foundry permissions for the deploy call itself.
+    If you haven't done an interactive `az login` on this particular jumpbox
+    container, that grant will fail with `403 InsufficientPrivileges` (the
+    deploy still succeeds); re-run just the grant from your own machine —
+    the failure message tells you exactly how. Separately, if this step
+    fails with a `ProvisioningError` that doesn't clear on retry, see
+    `deploy_hosted_agent.py`'s module docstring for the `--image`
+    build-and-push fallback (needs an Azure Container Registry — deploy
+    `infra/modules/foundry.bicep` with `enableContainerRegistry=true` first).
 
 ## Manual steps required
 

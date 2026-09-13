@@ -213,12 +213,28 @@ def _grant_agent_data_access(state: StateStore, agent_principal_id: str, query_u
     """The hosted agent's custom query_bus_telemetry tool needs its own
     identity to have Fabric workspace Viewer (so the workspace's Kusto engine
     accepts the connection at all) and Kusto database Viewer (so it can
-    actually read table data) — both idempotent, safe to re-run."""
+    actually read table data) — both idempotent, safe to re-run.
+
+    The workspace-role grant needs Fabric Admin/Member on the workspace —
+    confirmed live that the ACI jumpbox's own identity doesn't have this
+    (it only has Foundry Project Manager, granted for the Foundry calls
+    this script also makes) and fails with 403 InsufficientPrivileges. If
+    this script is run from the jumpbox, that grant needs to be re-run from
+    a delegated human session instead (e.g. your own machine, `az login`)."""
     workspace_id = state.output("workspace", "workspaceId")
 
     fabric = FabricClient()
-    fabric.grant_workspace_role(workspace_id, agent_principal_id, "ServicePrincipal", "Viewer")
-    logger.info("Granted hosted agent Viewer on Fabric workspace %s.", workspace_id)
+    try:
+        fabric.grant_workspace_role(workspace_id, agent_principal_id, "ServicePrincipal", "Viewer")
+        logger.info("Granted hosted agent Viewer on Fabric workspace %s.", workspace_id)
+    except Exception as exc:  # noqa: BLE001 — surfaced as guidance, not swallowed
+        logger.warning(
+            "Could not grant workspace Viewer to the hosted agent (%s). If this ran from the jumpbox, "
+            "its own identity likely lacks Fabric Admin/Member on the workspace — re-run just this grant "
+            "from a machine signed in as a delegated human "
+            "(FabricClient().grant_workspace_role('%s', '%s', 'ServicePrincipal', 'Viewer')).",
+            exc, workspace_id, agent_principal_id,
+        )
 
     app_id = resolve_service_principal_app_id(agent_principal_id)
     tenant_id = get_tenant_id()
