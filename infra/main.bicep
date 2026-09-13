@@ -53,6 +53,9 @@ param azureStorageAccountResourceId string
 @description('Existing Cosmos DB account resource ID for the Foundry standard agent setup.')
 param azureCosmosDBAccountResourceId string
 
+@description('Create a private Azure Container Registry for the hosted agent\'s build-and-push fallback path. Off by default; flip on only if REMOTE_BUILD (deploying from source) hits a platform-side ProvisioningError.')
+param enableContainerRegistry bool = false
+
 var keyVaultSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
 
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
@@ -123,6 +126,7 @@ module foundry 'modules/foundry.bicep' = {
     aiSearchResourceId: aiSearchResourceId
     azureStorageAccountResourceId: azureStorageAccountResourceId
     azureCosmosDBAccountResourceId: azureCosmosDBAccountResourceId
+    enableContainerRegistry: enableContainerRegistry
   }
 }
 
@@ -170,3 +174,4 @@ output foundryAccountId string = foundry.outputs.accountId
 output foundryAccountEndpoint string = foundry.outputs.accountEndpoint
 output foundryProjectName string = foundry.outputs.projectName
 output foundryProjectId string = foundry.outputs.projectId
+output foundryAcrName string = foundry.outputs.acrName

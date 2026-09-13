@@ -43,6 +43,9 @@ param azureStorageAccountResourceId string
 @description('Existing Cosmos DB account resource ID.')
 param azureCosmosDBAccountResourceId string
 
+@description('Create a private Azure Container Registry for the hosted agent\'s build-and-push fallback path (used when deploying from source / REMOTE_BUILD hits a platform-side ProvisioningError). Off by default — the Fleet Incident Agent only needs this as a fallback, not day to day.')
+param enableContainerRegistry bool = false
+
 @description('Optional: resource group names for existing DNS zones, keyed by zone name. Leave values empty to let the vendored module create new zones.')
 param existingDnsZones object = {
   'privatelink.services.ai.azure.com': ''
@@ -51,6 +54,11 @@ param existingDnsZones object = {
   'privatelink.search.windows.net': ''
   'privatelink.blob.core.windows.net': ''
   'privatelink.documents.azure.com': ''
+  // Only read when enableContainerRegistry is true, but the vendored ACR
+  // module indexes this key unconditionally — must always be present, even
+  // when the registry itself is off. Confirmed live: omitting it fails with
+  // "The language expression property 'privatelink.azurecr.io' doesn't exist".
+  'privatelink.azurecr.io': ''
 }
 
 // The vendored main.bicep's own default `dnsZoneNames` (its line ~157) always
@@ -91,9 +99,7 @@ module foundryVendored 'foundry-vendored/main.bicep' = {
     existingDnsZones: existingDnsZones
     dnsZoneNames: dnsZoneNamesWithoutAcr
     createAccountCapabilityHost: false
-    // The Fleet Incident Agent only needs the MCP tool + a model — no code
-    // interpreter / custom container tools — so skip ACR entirely.
-    enableContainerRegistry: false
+    enableContainerRegistry: enableContainerRegistry
   }
 }
 
@@ -107,6 +113,7 @@ module foundryVendored 'foundry-vendored/main.bicep' = {
 var uniqueSuffix = substring(uniqueString(resourceGroup().id), 0, 4)
 var accountName = toLower('${aiServicesBaseName}${uniqueSuffix}')
 var actualProjectName = toLower('${firstProjectName}${uniqueSuffix}')
+var acrName = toLower('acr${uniqueSuffix}')
 
 resource account 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = {
   name: accountName
@@ -129,3 +136,4 @@ output accountEndpoint string = account.properties.endpoint
 output accountPrincipalId string = account.identity.principalId
 output projectName string = project.name
 output projectId string = project.id
+output acrName string = enableContainerRegistry ? acrName : ''
