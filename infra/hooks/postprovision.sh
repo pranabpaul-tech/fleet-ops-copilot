@@ -14,6 +14,9 @@ fi
 export PYTHONPATH=src
 export FLEETOPS_FORCE_CLI_CREDENTIAL=1
 
+echo "== Recording Wave 1's Bicep outputs into state.json =="
+.venv/bin/python scripts/capture_wave1_state.py
+
 echo "== Creating the Fabric workspace and assigning it to the capacity =="
 .venv/bin/python src/fleetops/setup/01_workspace.py
 

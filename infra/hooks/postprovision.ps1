@@ -18,6 +18,9 @@ try {
     $env:PYTHONPATH = "src"
     $env:FLEETOPS_FORCE_CLI_CREDENTIAL = "1"
 
+    Write-Host "`n== Recording Wave 1's Bicep outputs into state.json ==" -ForegroundColor Cyan
+    & ".venv/Scripts/python.exe" scripts/capture_wave1_state.py
+
     Write-Host "`n== Creating the Fabric workspace and assigning it to the capacity ==" -ForegroundColor Cyan
     & ".venv/Scripts/python.exe" src/fleetops/setup/01_workspace.py
 

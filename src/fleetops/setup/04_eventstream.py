@@ -54,6 +54,7 @@ def update(client: FabricClient, workspace_id: str, eventstream_id: str, state: 
     if raw.get("_placeholder"):
         raise RuntimeError(f"{DEFINITION_PATH} is still the placeholder shape — nothing real to push.")
     clean = {k: v for k, v in raw.items() if not k.startswith("_")}
+    _retarget_eventhouse_destinations(clean, state)
 
     logger.info("Updating eventstream %s from %s...", eventstream_id, DEFINITION_PATH)
     client.call("POST", f"/workspaces/{workspace_id}/eventstreams/{eventstream_id}/updateDefinition", {
@@ -70,6 +71,30 @@ def update(client: FabricClient, workspace_id: str, eventstream_id: str, state: 
     logger.info("Now confirm rows are landing: BusTelemetryRaw | take 5 (from validate/smoke_kql.py or the portal).")
 
 
+def _retarget_eventhouse_destinations(definition: dict, state: StateStore) -> None:
+    """The captured definition's Eventhouse destination(s) hardcode the
+    workspaceId/itemId/databaseName of whichever Eventhouse was live at
+    capture time — those are per-deployment IDs, not part of the topology
+    shape, and go stale the moment that Eventhouse is ever recreated (a fresh
+    `azd provision`, a torn-down-and-rebuilt environment, ...). Overwrite them
+    with the current state.json values on every apply, in place.
+
+    `itemId` here must be the KQL *database's* item ID, not the Eventhouse
+    item's — despite the destination `type` being "Eventhouse". Confirmed
+    live: passing the Eventhouse's own item ID fails with
+    "Unable to extract cluster URL from the Eventhouse KQL database item ID
+    ...", since Fabric resolves the destination's cluster URL from the
+    database item specifically.
+    """
+    eventhouse = state.require("eventhouse", "kqlDatabaseId", "kqlDatabaseName")
+    workspace_id = state.output("workspace", "workspaceId")
+    for destination in definition.get("destinations", []):
+        if destination.get("type") == "Eventhouse":
+            destination["properties"]["workspaceId"] = workspace_id
+            destination["properties"]["itemId"] = eventhouse["kqlDatabaseId"]
+            destination["properties"]["databaseName"] = eventhouse["kqlDatabaseName"]
+
+
 def apply(client: FabricClient, workspace_id: str, state: StateStore) -> None:
     raw = json.loads(DEFINITION_PATH.read_text(encoding="utf-8"))
     if raw.get("_placeholder"):
@@ -80,6 +105,7 @@ def apply(client: FabricClient, workspace_id: str, state: StateStore) -> None:
         )
     # Strip our own bookkeeping keys before handing the definition to Fabric.
     clean = {k: v for k, v in raw.items() if not k.startswith("_")}
+    _retarget_eventhouse_destinations(clean, state)
 
     settings = get_settings()
     existing = state.get("eventstream")
