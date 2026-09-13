@@ -154,7 +154,7 @@ az container exec --resource-group <rg> --name ci-fleetops-jump \
 | 3b | Lock the workspace down to private-only access | local | `src/fleetops/setup/05_network_policy.py --confirm` |
 | 4 | Deploy the Foundry hosted agent[^1] | jumpbox | `src/fleetops/foundry/deploy_hosted_agent.py` |
 | 5 | Deploy the Bot Service | local | `./infra/deploy.ps1 -Wave 3` |
-| 6 | Publish the agent to Microsoft Teams | jumpbox | `src/fleetops/foundry/publish_teams.py` |
+| 6 | Publish the agent to Microsoft Teams[^2] | jumpbox | `src/fleetops/foundry/publish_teams.py` |
 | 7 | Author the Operations Agent (see **Manual steps**) | local | `src/fleetops/setup/06_ops_agent.py --capture <id>` |
 | 8 | Validate everything end to end | jumpbox | `src/fleetops/validate/e2e_flow.py` |
 
@@ -184,6 +184,13 @@ az container exec --resource-group <rg> --name ci-fleetops-jump \
 
     See `deploy_hosted_agent.py`'s module docstring for the same sequence
     inline with the code that consumes it.
+
+[^2]: The script's own log output prints a direct link once publishing
+    succeeds — `https://teams.microsoft.com/l/app/<teamsAppId>` — that's a
+    real, working deep link straight to the agent, not something you need
+    to construct yourself. `titleId` (also printed) isn't enough on its own
+    to build one; you need `teamsAppId` from the same publish response,
+    which this script now captures into `state.json['teams_publish']`.
 
 ## Manual steps required
 
