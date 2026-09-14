@@ -163,8 +163,11 @@ has to be a human clicking two buttons:
 1. Open the [Fabric portal](https://app.fabric.microsoft.com), go to your
    workspace (`fleet-ops-copilot` by default), and open the **Fleet
    Operations Monitor** item.
-2. Click **Generate Playbook**.
-3. Click **Start**.
+2. Click **Generate Playbook**. It may take more than one try.
+3. Click on Settings (Gear icon) of the Agent and click on Agent behavor.
+4. Edit Message Delivery > Send as a direct message > and select your name as user.
+5. Save everything. Click save in Agent ribbon as weell.
+6. Click **Start**.
 
 **Result:** the agent begins evaluating `BusTelemetry` on its own schedule
 and will alert on delay incidents, dwell/holding incidents, and vehicles
