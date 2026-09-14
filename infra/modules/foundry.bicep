@@ -46,6 +46,9 @@ param azureCosmosDBAccountResourceId string
 @description('Create a private Azure Container Registry for the hosted agent\'s build-and-push fallback path (used when deploying from source / REMOTE_BUILD hits a platform-side ProvisioningError). Off by default — the Fleet Incident Agent only needs this as a fallback, not day to day.')
 param enableContainerRegistry bool = false
 
+@description('Whether the Foundry account is created with public network access already enabled, rather than Disabled-then-toggled later at deploy/publish time. Confirmed live: toggling an already-Disabled account can leave a fronting APIM layer stuck for 30+ minutes returning 403s even after the account resource itself correctly shows Enabled — creating it public from the start avoids that. deploy_hosted_agent.py / publish_teams.py still manage the Enabled->Disabled transition after the agent is deployed and published; this only controls the very first state.')
+param publicNetworkAccessAtCreation bool = true
+
 @description('Optional: resource group names for existing DNS zones, keyed by zone name. Leave values empty to let the vendored module create new zones.')
 param existingDnsZones object = {
   'privatelink.services.ai.azure.com': ''
@@ -100,6 +103,7 @@ module foundryVendored 'foundry-vendored/main.bicep' = {
     dnsZoneNames: dnsZoneNamesWithoutAcr
     createAccountCapabilityHost: false
     enableContainerRegistry: enableContainerRegistry
+    publicNetworkAccessAtCreation: publicNetworkAccessAtCreation
   }
 }
 

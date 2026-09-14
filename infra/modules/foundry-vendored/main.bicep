@@ -110,6 +110,9 @@ param skipModelDeployment bool = false
 @description('Enable Azure Container Registry with Private Endpoint. When true, creates an ACR (Premium SKU) with a PE in the private endpoints subnet.')
 param enableContainerRegistry bool = true
 
+@description('Whether the Foundry account is created with public network access already enabled, rather than Disabled-then-toggled later. See ai-account-identity.bicep for why this matters.')
+param publicNetworkAccessAtCreation bool = true
+
 @description('Optional developer IP CIDR to allowlist for ACR push access (e.g., 203.0.113.0/26 or 10.0.0.0/16). When empty, public access remains disabled.')
 param developerIpCidr string = ''
 
@@ -256,6 +259,7 @@ module aiAccount 'modules-network-secured/ai-account-identity.bicep' = {
     agentSubnetId: vnet.outputs.agentSubnetId
     existingAccountResourceId: existingAiFoundryAccountResourceId
     skipModelDeployment: skipModelDeployment
+    publicNetworkAccessAtCreation: publicNetworkAccessAtCreation
   }
 }
 /*

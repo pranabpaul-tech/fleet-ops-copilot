@@ -102,13 +102,25 @@ cp .env.example .env   # fill in values
 Fill in `infra/main.bicepparam`: your Fabric admin UPN(s), your own operator
 object ID (`az ad signed-in-user show --query id -o tsv`), and the resource
 IDs of the AI Search / Storage / Cosmos DB accounts from the prerequisites
-step.
+step. (The resource group name, Foundry account base name, Fabric capacity
+name, and hosted agent name are asked interactively in Step 2 instead — no
+need to edit those here.)
 
 ### Step 2 — Provision everything Fabric-side
 
 ```bash
 azd provision
 ```
+
+A `preprovision` hook asks for four names before anything gets created —
+press Enter at each prompt to keep the default shown:
+
+- **Resource group name**
+- **Foundry account base name** (a short deterministic suffix gets appended,
+  e.g. `fleetopsai` → `fleetopsai4fgm`)
+- **Fabric capacity name**
+- **Foundry hosted agent name** (the technical identifier used for the
+  actual Fabric/Foundry item — no spaces)
 
 **Result:** the VNet, F8 Fabric capacity, Key Vault, jumpbox, and the
 VNet-injected Foundry account/project are all deployed — and the Fabric
@@ -119,6 +131,9 @@ flowing:
 ```bash
 .venv/bin/python src/fleetops/validate/smoke_kql.py
 ```
+
+**✅ Check before proceeding:** the command above shows live `BusTelemetry`
+rows, and `state.json['ops_agent']` has a real `opsAgentId`.
 
 ### Step 3 — Lock the Fabric workspace to private-only access
 
@@ -138,23 +153,57 @@ Once that confirms DNS resolves privately, run this from your own machine:
 .venv/bin/python src/fleetops/setup/05_network_policy.py --confirm
 ```
 
-### Step 4 — Deploy the Foundry hosted agent and publish to Teams
+**✅ Check before proceeding:** `network_check.py` shows DNS resolving to a
+private IP, and `05_network_policy.py --status` confirms the workspace's
+public access is actually `Deny`.
+
+### Step 4 — Deploy the Foundry hosted agent
 
 ```bash
 .venv/bin/python src/fleetops/foundry/deploy_hosted_agent.py
+```
+
+If this fails with a `ProvisioningError` that doesn't clear on retry, use
+the image-based fallback instead — see **How it works** for the exact
+sequence.
+
+**✅ Check before proceeding — don't skip this one:** confirm the agent is
+actually *responding*, not just registered as `active`. Send it a real
+query directly (see **How it works** → "Testing the agent directly" for the
+exact snippet). This is the step most likely to need patience — Microsoft
+Foundry hosted agents can take a while after creation before their
+invocation route is reachable, even though the account and agent both show
+healthy. Don't move on until a real response comes back.
+
+### Step 5 — Deploy the Bot Service
+
+```bash
 ./infra/deploy.ps1 -Wave 3
+```
+
+**✅ Check before proceeding:**
+```bash
+az bot show --name <botName> --resource-group <rg> --query "{msaAppId:properties.msaAppId, state:properties.provisioningState}"
+```
+Confirm `msaAppId` matches the agent identity from Step 4 and
+`provisioningState` is `Succeeded`.
+
+### Step 6 — Publish to Microsoft Teams
+
+```bash
 .venv/bin/python src/fleetops/foundry/publish_teams.py
 ```
 
-If the first command fails with a `ProvisioningError` that doesn't clear on
-retry, use the image-based fallback instead — see **How it works** for the
-exact sequence.
-
-**Result:** the last command prints a direct Teams link —
+**Result:** prints a direct Teams link —
 `https://teams.microsoft.com/l/app/<teamsAppId>`. That's the end result of
 this whole step: open it, and message the agent.
 
-### Step 5 — Start the Operations Agent (manual, one-time, portal-only)
+**✅ Check before proceeding:** confirm the publish call actually returned a
+`teamsAppId` (not just a `titleId`). After testing in Teams, you can also
+check the Bot Service's `RequestsTraffic` metric or Log Analytics for a real
+inbound hit, to confirm the message actually reached the agent.
+
+### Step 7 — Start the Operations Agent (manual, one-time, portal-only)
 
 Its item and real monitoring instructions were already created automatically
 in Step 2 — this is the only part of the whole deployment with no API, so it
@@ -173,7 +222,7 @@ has to be a human clicking two buttons:
 and will alert on delay incidents, dwell/holding incidents, and vehicles
 that stop reporting.
 
-### Step 6 — Validate end to end
+### Step 8 — Validate end to end
 
 From the jumpbox:
 
@@ -185,7 +234,7 @@ python3 src/fleetops/validate/e2e_flow.py
 
 - **Operations Agent**: running, watching `BusTelemetry`, alerting on
   incidents.
-- **Conversational agent**: live in Microsoft Teams at the link Step 4
+- **Conversational agent**: live in Microsoft Teams at the link Step 6
   printed. Send it a question about a vehicle or route — it queries the
   Eventhouse directly and answers from live data.
 
@@ -272,6 +321,37 @@ minutes later) — that's an ordinary propagation delay, not a sign anything
 is wrong. Once locked down, real Teams/Bot Service traffic continues working
 via the `enable_m365_public_endpoint` exception set during Teams publish;
 only the account's general public reachability closes.
+
+### Testing the agent directly
+
+Don't wait for Bot Service/Teams to find out whether the agent actually
+works — test it directly first, from the same machine you ran
+`deploy_hosted_agent.py` from:
+
+```python
+import sys
+sys.path.insert(0, "src")
+from azure.ai.projects import AIProjectClient
+from azure.identity import DefaultAzureCredential
+from fleetops.foundry._rest import project_endpoint
+
+endpoint = project_endpoint("<foundryAccountName>", "<foundryProjectName>")
+with DefaultAzureCredential() as credential:
+    project = AIProjectClient(endpoint=endpoint, credential=credential)
+    openai_client = project.get_openai_client(agent_name="<agentName>")
+    response = openai_client.responses.create(input="What is the most recent event for any vehicle in BusTelemetry?")
+    print(response.output_text)
+```
+
+A `404 Subdomain does not map to a resource` or `403 Public access is
+disabled` here — even though the agent shows `active` and the account shows
+`publicNetworkAccess: Enabled` — means the invocation route just isn't
+reachable yet. Confirmed live, repeatedly: this can take anywhere from a
+few minutes to 30+ minutes after a fresh agent (or fresh account) is
+created, independent of how clean the deployment is. Retry every minute or
+two rather than assuming something's broken; deleting and recreating the
+agent does **not** skip this wait, since it's the account's own
+subdomain/routing registration that's slow, not anything agent-specific.
 
 ### `deploy_hosted_agent.py`: RBAC grant and the ACR fallback
 

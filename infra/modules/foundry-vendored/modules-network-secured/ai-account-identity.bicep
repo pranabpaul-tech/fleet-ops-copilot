@@ -8,6 +8,9 @@ param modelCapacity int
 param agentSubnetId string
 param networkInjection string = 'true'
 
+@description('Whether the account is created with public network access already enabled. Confirmed live: creating it Disabled and toggling Enabled later can leave a fronting APIM layer stuck for 30+ minutes returning "403 Public access is disabled" even though the account resource itself correctly shows Enabled — creating it public from the start avoids that entirely. Still VNet-injected either way; this only affects inbound reachability, not the account\'s own outbound path to Fabric.')
+param publicNetworkAccessAtCreation bool = true
+
 // True BYO Foundry account.
 // When existingAccountResourceId is set, reference the existing AI Foundry
 // (Cognitive Services AIServices kind) account instead of creating a new one
@@ -39,12 +42,12 @@ resource account 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = if 
     allowProjectManagement: true
     customSubDomainName: accountName
     networkAcls: {
-      defaultAction: 'Deny'
+      defaultAction: publicNetworkAccessAtCreation ? 'Allow' : 'Deny'
       virtualNetworkRules: []
       ipRules: []
       bypass:'AzureServices'
     }
-    publicNetworkAccess: 'Disabled'
+    publicNetworkAccess: publicNetworkAccessAtCreation ? 'Enabled' : 'Disabled'
     networkInjections:((networkInjection == 'true') ? [
       {
         scenario: 'agent'

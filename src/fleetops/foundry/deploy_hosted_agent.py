@@ -48,7 +48,9 @@ from fleetops.foundry._rest import FoundryAgentRest, project_endpoint
 
 logger = setup_logging(__name__)
 
-HOSTED_AGENT_NAME = "fleet-incident-agent"
+# Set interactively by infra/hooks/preprovision.ps1|.sh into .env
+# (FLEETOPS_FOUNDRY_AGENT_NAME) — see that hook for why.
+HOSTED_AGENT_NAME = get_settings().foundry_agent_name
 SOURCE_DIR = Path(__file__).resolve().parent / "hosted_agent"
 
 

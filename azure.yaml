@@ -9,6 +9,13 @@ infra:
   module: main
 
 hooks:
+  preprovision:
+    windows:
+      shell: pwsh
+      run: ./infra/hooks/preprovision.ps1
+    posix:
+      shell: sh
+      run: ./infra/hooks/preprovision.sh
   postprovision:
     windows:
       shell: pwsh

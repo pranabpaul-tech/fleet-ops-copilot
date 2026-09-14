@@ -56,6 +56,9 @@ param azureCosmosDBAccountResourceId string
 @description('Create a private Azure Container Registry for the hosted agent\'s build-and-push fallback path. Off by default; flip on only if REMOTE_BUILD (deploying from source) hits a platform-side ProvisioningError.')
 param enableContainerRegistry bool = false
 
+@description('Whether the Foundry account is created with public network access already enabled, rather than Disabled-then-toggled later. See infra/modules/foundry.bicep for why this matters — on by default because toggling an already-Disabled account has been observed to get stuck for 30+ minutes behind a fronting APIM layer.')
+param publicNetworkAccessAtCreation bool = true
+
 var keyVaultSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
 
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
@@ -127,6 +130,7 @@ module foundry 'modules/foundry.bicep' = {
     azureStorageAccountResourceId: azureStorageAccountResourceId
     azureCosmosDBAccountResourceId: azureCosmosDBAccountResourceId
     enableContainerRegistry: enableContainerRegistry
+    publicNetworkAccessAtCreation: publicNetworkAccessAtCreation
   }
 }
 

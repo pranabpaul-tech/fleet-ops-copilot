@@ -38,7 +38,12 @@ class Settings(BaseSettings):
 
     foundry_account_name: str = ""
     foundry_project_name: str = "fleet-incident"
-    foundry_agent_name: str = "Fleet Incident Agent"
+    # Technical identifier used as the actual Fabric/Foundry item name (no
+    # spaces) — set interactively by infra/hooks/preprovision.ps1|.sh into
+    # .env. Read by foundry/deploy_hosted_agent.py; flows into state.json
+    # from there, so publish_teams.py and everything downstream picks it up
+    # without needing this setting itself.
+    foundry_agent_name: str = "fleet-incident-agent"
 
     key_vault_uri: str = ""
 
