@@ -152,10 +152,10 @@ az container exec --resource-group <rg> --name ci-fleetops-jump \
 | 2 | Deploy the workspace-level Fabric private link | local | `./infra/deploy.ps1 -Wave 2` |
 | 3a | Verify its DNS resolves privately | jumpbox | `src/fleetops/validate/network_check.py` |
 | 3b | Lock the workspace down to private-only access | local | `src/fleetops/setup/05_network_policy.py --confirm` |
-| 4 | Deploy the Foundry hosted agent[^1] | jumpbox | `src/fleetops/foundry/deploy_hosted_agent.py` |
+| 4 | Deploy the Foundry hosted agent[^1][^3] | jumpbox or local | `src/fleetops/foundry/deploy_hosted_agent.py` |
 | 5 | Deploy the Bot Service | local | `./infra/deploy.ps1 -Wave 3` |
-| 6 | Publish the agent to Microsoft Teams[^2] | jumpbox | `src/fleetops/foundry/publish_teams.py` |
-| 7 | Author the Operations Agent (see **Manual steps**) | local | `src/fleetops/setup/06_ops_agent.py --capture <id>` |
+| 6 | Publish the agent to Microsoft Teams[^2][^3] | jumpbox or local | `src/fleetops/foundry/publish_teams.py` |
+| 7 | Click **Generate Playbook** then **Start** on the Operations Agent (see **Manual steps**) — it was already created by the postprovision hook | — | portal only |
 | 8 | Validate everything end to end | jumpbox | `src/fleetops/validate/e2e_flow.py` |
 
 [^1]: This step also grants the new agent's identity Fabric workspace/Kusto
@@ -192,6 +192,62 @@ az container exec --resource-group <rg> --name ci-fleetops-jump \
     to build one; you need `teamsAppId` from the same publish response,
     which this script now captures into `state.json['teams_publish']`.
 
+    This one call needs a genuinely delegated (human) token, not the
+    jumpbox's own managed identity — confirmed live as a
+    `400 AADSTS500016 (... is not supported as a resource application to
+    execute the flow)` from the `microsoft365/publish` endpoint specifically —
+    it does an on-behalf-of exchange a managed-identity token can't
+    participate in. `DefaultAzureCredential` on the jumpbox silently prefers
+    the managed identity over any interactive `az login` you've done on that
+    container, so run this one step with `FLEETOPS_FORCE_CLI_CREDENTIAL=1` to
+    force the CLI credential instead. From your own machine (not the
+    jumpbox), `DefaultAzureCredential` already falls back to the CLI
+    credential on its own — no env var needed there.
+
+[^3]: **The single most important, least obvious step in this whole
+    runbook.** The Foundry account's hosted-agent invocation routes
+    (`/endpoint/protocols/openai/`, and — critically — the
+    `activityProtocol` route Teams itself calls) only get correctly
+    registered in Azure's internal routing/DNS layer if the account is
+    publicly reachable (`publicNetworkAccess: Enabled`,
+    `networkAcls.defaultAction: Allow`) at the time the agent is deployed
+    and published. An account created and left `Disabled` from the start —
+    the normal, secure-by-default state this repo's Bicep produces — hits a
+    **permanent, not-transient** `403 Traffic is not from an approved
+    private endpoint` (from inside the VNet) or `404 Subdomain does not map
+    to a resource` (from outside it) on every invocation attempt, forever,
+    regardless of how the account, Bot Service, or Teams publish are
+    configured. This isn't a propagation delay — a real deployment left in
+    this state for hours never recovers. Confirmed by direct A/B test: the
+    identical agent, identical Bot Service, identical Teams publish call,
+    failed permanently when the account was `Disabled` from creation, and
+    worked immediately when the account was flipped `Enabled` right after
+    creation, before the agent was ever deployed.
+
+    The fix costs nothing extra in the end state — it's purely about
+    **ordering**, and both scripts that touch this handle it automatically
+    now: `deploy_hosted_agent.py` (step 4) flips the account public before
+    doing anything else, and leaves it public (Bot Service and Teams publish
+    both still need it). `publish_teams.py` (step 6) flips it back to
+    private as its last action, once publishing has actually succeeded. You
+    don't need to run any `az resource update` yourself — pass
+    `--skip-network-toggle` to either script only if you're deliberately
+    managing this by hand (e.g. re-running step 4 after a failed attempt
+    where the account is already public).
+
+    The account is still VNet-injected the whole time (`networkInjections`
+    with the `agent` scenario pointing at `snet-agent` isn't affected by
+    this toggle), so its own connection to the Fabric Eventhouse stays on
+    the private link throughout — only the account's own inbound reachability
+    changes. Locking back down takes a few minutes to actually take effect
+    (confirmed live: a direct public call briefly still succeeded right
+    after the toggle, then started correctly returning
+    `403 Public access is disabled` a few minutes later) — that's an
+    ordinary propagation delay, not a sign anything is wrong. Once locked
+    down, real Teams/Bot Service traffic continues working via the
+    `enable_m365_public_endpoint` exception set during Teams publish (step
+    6); only the account's general public reachability closes.
+
 ## Manual steps required
 
 These can't be scripted — they need a human in a portal, or a real
@@ -205,30 +261,30 @@ interactive sign-in:
   `Microsoft.Search`, `Microsoft.DocumentDB`, `Microsoft.Storage`,
   `Microsoft.KeyVault`. Re-register `Microsoft.Fabric` again the first time
   you use workspace-level private link — it has its own registration flag.
-- **Authoring the Operations Agent** — its schema isn't fully documented, so
-  this repo captures a real definition from the portal rather than guessing
-  one:
+- **Starting the Operations Agent** — its item and real instructions (three
+  monitoring rules over `BusTelemetry`, captured from a real portal-authored
+  agent once, long ago, and committed at
+  `artifacts/ops-agent/OperationsAgentV1.json`) are created automatically by
+  the `postprovision` hook via `06_ops_agent.py --apply` — no portal
+  authoring needed for a normal deploy. Its `dataSources` block is
+  re-targeted at whatever Eventhouse exists in *this* environment on every
+  `--apply`/`--update` run, so the committed file never goes stale even
+  across a full teardown-and-rebuild. Two actions remain genuinely
+  portal-only, with no REST/API equivalent at all:
   1. In the [Fabric portal](https://app.fabric.microsoft.com), open your
-     workspace (`fleet-ops-copilot` by default) and create a new
-     **Operations Agent** item. Point its data source at the Eventhouse's
-     KQL database (the one created in step 2 of provisioning).
-  2. Its item ID is in the browser's URL bar once you have it open —
-     something like
-     `.../operationsagents/46a2c551-1f9c-4a2d-9620-27c6a3a0524e`; the GUID
-     at the end is `<id>`.
-  3. From the repo root, on your own machine (this is a plain Fabric REST
-     call, not a VNet one):
-     ```powershell
-     .venv\Scripts\python.exe src\fleetops\setup\06_ops_agent.py --capture <id>
-     ```
-     This writes the real definition into
-     `artifacts/ops-agent/OperationsAgentV1.json`.
-  4. To push edited instructions from that file back up to the same agent
-     later, run `src/fleetops/setup/06_ops_agent.py --update <id>` the same
-     way (`--apply` only ever *creates* a brand-new agent — it's a no-op once
-     one is already recorded in `state.json`).
-  5. Back in the portal, click **Generate Playbook** on the agent, then
-     **Start** it — both are portal-only actions with no API equivalent.
+     workspace (`fleet-ops-copilot` by default) and open the **Fleet
+     Operations Monitor** Operations Agent item the hook already created.
+  2. Click **Generate Playbook** — this compiles the instructions into the
+     agent's actual per-rule KQL query plan.
+  3. Click **Start** — the agent won't run until this is clicked, even with
+     `shouldRun: true` in its definition.
+
+  If you ever want to edit the instructions themselves, edit
+  `artifacts/ops-agent/OperationsAgentV1.json` directly and push with
+  `06_ops_agent.py --update <opsAgentId>` (the ID is in `state.json`, or in
+  the portal URL bar) — no need to re-author in the portal. `--capture <id>`
+  still exists for the rare case of pulling a portal-made edit back into the
+  repo.
 - **Delegated sign-in**: every setup/validation script must run under a real
   operator's own `az login` session, not a service principal — the
   Operations Agent inherits its creator's identity, and the workspace

@@ -69,6 +69,7 @@ def update(client: FabricClient, workspace_id: str, ops_agent_id: str, state: St
     raw = json.loads(DEFINITION_PATH.read_text(encoding="utf-8"))
     if raw.get("_placeholder"):
         raise RuntimeError(f"{DEFINITION_PATH} is still the placeholder shape — nothing real to push.")
+    _retarget_kusto_data_source(raw.get("configuration", {}), state)
 
     result = client.call("POST", f"/workspaces/{workspace_id}/operationsAgents/{ops_agent_id}/getDefinition"
                                   f"?format=OperationsAgentV1")
@@ -96,6 +97,33 @@ def update(client: FabricClient, workspace_id: str, ops_agent_id: str, state: St
     logger.info("If the instructions changed meaningfully, re-run Generate Playbook in the portal.")
 
 
+def _retarget_kusto_data_source(config: dict, state: StateStore) -> None:
+    """The captured definition's dataSources block hardcodes the
+    workspaceId/kqlDatabaseId of whichever Eventhouse was live at capture
+    time — those are per-deployment IDs, not part of the agent's authored
+    config, and go stale the moment that Eventhouse is ever recreated (same
+    class of problem as 04_eventstream.py's _retarget_eventhouse_destinations,
+    which this mirrors). Rewrite every KustoDatabase data source in place
+    to point at the current state.json values on every apply/update.
+    """
+    eventhouse = state.require("eventhouse", "kqlDatabaseId")
+    workspace_id = state.output("workspace", "workspaceId")
+    kql_database_id = eventhouse["kqlDatabaseId"]
+
+    data_sources = config.get("dataSources", {})
+    retargeted = {}
+    for source in data_sources.values():
+        if source.get("type") != "KustoDatabase":
+            retargeted[source["id"]] = source
+            continue
+        retargeted[kql_database_id] = {
+            "id": kql_database_id,
+            "type": "KustoDatabase",
+            "workspaceId": workspace_id,
+        }
+    config["dataSources"] = retargeted
+
+
 def apply(client: FabricClient, workspace_id: str, state: StateStore) -> None:
     raw = json.loads(DEFINITION_PATH.read_text(encoding="utf-8"))
     if raw.get("_placeholder"):
@@ -105,6 +133,7 @@ def apply(client: FabricClient, workspace_id: str, state: StateStore) -> None:
             f"script's module docstring."
         )
     clean = {k: v for k, v in raw.items() if not k.startswith("_")}
+    _retarget_kusto_data_source(clean.get("configuration", {}), state)
 
     settings = get_settings()
     existing = state.get("ops_agent")

@@ -33,12 +33,16 @@ try {
     Write-Host "`n== Creating the Eventstream (Buses sample source -> Eventhouse) ==" -ForegroundColor Cyan
     & ".venv/Scripts/python.exe" src/fleetops/setup/04_eventstream.py --apply
 
-    Write-Host "`nWave 1 + Fabric pipeline are live. See README.md 'Manual steps' for what's left:" -ForegroundColor Green
+    Write-Host "`n== Creating the Operations Agent from the checked-in definition ==" -ForegroundColor Cyan
+    & ".venv/Scripts/python.exe" src/fleetops/setup/06_ops_agent.py --apply
+
+    Write-Host "`nWave 1 + the whole Fabric phase (workspace, Eventhouse, Eventstream, Operations Agent) are live." -ForegroundColor Green
+    Write-Host "See README.md 'Manual steps' for what's left:" -ForegroundColor Green
     Write-Host "  1. Enable two Fabric admin portal tenant settings, then run setup/05_network_policy.py --confirm" -ForegroundColor Yellow
     Write-Host "  2. Deploy infra/wave2-fabric-privatelink.bicep" -ForegroundColor Yellow
-    Write-Host "  3. Run foundry/deploy_hosted_agent.py" -ForegroundColor Yellow
-    Write-Host "  4. Deploy infra/wave3-bot.bicep, then run foundry/publish_teams.py" -ForegroundColor Yellow
-    Write-Host "  5. Author the Operations Agent in the Fabric portal, then run setup/06_ops_agent.py --capture <id>" -ForegroundColor Yellow
+    Write-Host "  3. Run foundry/deploy_hosted_agent.py (temporarily makes the Foundry account public, deploys, leaves it public)" -ForegroundColor Yellow
+    Write-Host "  4. Deploy infra/wave3-bot.bicep, then run foundry/publish_teams.py (locks the Foundry account back to private once publishing succeeds)" -ForegroundColor Yellow
+    Write-Host "  5. In the Fabric portal, click Generate Playbook then Start on the Operations Agent" -ForegroundColor Yellow
 }
 finally {
     Pop-Location

@@ -252,7 +252,20 @@ def main() -> None:
     parser.add_argument("--image", metavar="REGISTRY/REPO:TAG",
                          help="Register this pre-built image instead of building from source — the "
                               "documented fallback when REMOTE_BUILD hits a platform-side ProvisioningError.")
+    parser.add_argument("--skip-network-toggle", action="store_true",
+                         help="Don't flip the Foundry account public before deploying — use only if you've "
+                              "already made it public yourself (e.g. re-running this after a failed attempt).")
     args = parser.parse_args()
+
+    if not args.skip_network_toggle:
+        from fleetops.common.foundry_network import set_foundry_public_access
+        state = StateStore()
+        account_id = state.output("wave1", "foundryAccountId")
+        logger.info("Temporarily making the Foundry account public — required for the hosted agent's "
+                     "invocation routes to register correctly (see README footnote [^3]). It stays public "
+                     "through Bot Service deploy and Teams publish; lock it back down after those succeed.")
+        set_foundry_public_access(account_id, enabled=True)
+
     if args.image:
         deploy_from_image(args.image, args.model)
     else:

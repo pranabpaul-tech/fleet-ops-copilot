@@ -57,6 +57,9 @@ def main() -> None:
     parser.add_argument("--developer-website-url", default="https://github.com/pranabpaul-tech/fleet-ops-copilot")
     parser.add_argument("--privacy-url", default="https://github.com/pranabpaul-tech/fleet-ops-copilot")
     parser.add_argument("--terms-url", default="https://github.com/pranabpaul-tech/fleet-ops-copilot")
+    parser.add_argument("--skip-network-toggle", action="store_true",
+                         help="Don't lock the Foundry account back to private after a successful publish — "
+                              "use if you want to keep testing with it public for a while first.")
     args = parser.parse_args()
 
     state = StateStore()
@@ -125,6 +128,16 @@ def main() -> None:
         logger.info("Submitted for Microsoft 365 admin approval: "
                     "https://admin.cloud.microsoft/?#/agents/all/requested — it appears under "
                     "'Built by your org' once approved.")
+
+    if not args.skip_network_toggle:
+        from fleetops.common.foundry_network import set_foundry_public_access
+        account_id = state.output("wave1", "foundryAccountId")
+        logger.info("Locking the Foundry account back down to private now that publishing succeeded. "
+                     "Takes a few minutes to actually take effect — a public call may briefly still "
+                     "succeed right after this; that's expected propagation delay, not a bug. Real "
+                     "Teams/Bot Service traffic keeps working via the enable_m365_public_endpoint "
+                     "exception set above.")
+        set_foundry_public_access(account_id, enabled=False)
 
 
 if __name__ == "__main__":

@@ -29,12 +29,16 @@ echo "== Applying the BusTelemetry schema =="
 echo "== Creating the Eventstream (Buses sample source -> Eventhouse) =="
 .venv/bin/python src/fleetops/setup/04_eventstream.py --apply
 
+echo "== Creating the Operations Agent from the checked-in definition =="
+.venv/bin/python src/fleetops/setup/06_ops_agent.py --apply
+
 cat <<'EOF'
 
-Wave 1 + Fabric pipeline are live. See README.md "Manual steps" for what's left:
+Wave 1 + the whole Fabric phase (workspace, Eventhouse, Eventstream, Operations Agent) are live.
+See README.md "Manual steps" for what's left:
   1. Enable two Fabric admin portal tenant settings, then run setup/05_network_policy.py --confirm
   2. Deploy infra/wave2-fabric-privatelink.bicep
-  3. Run foundry/deploy_hosted_agent.py
-  4. Deploy infra/wave3-bot.bicep, then run foundry/publish_teams.py
-  5. Author the Operations Agent in the Fabric portal, then run setup/06_ops_agent.py --capture <id>
+  3. Run foundry/deploy_hosted_agent.py (temporarily makes the Foundry account public, deploys, leaves it public)
+  4. Deploy infra/wave3-bot.bicep, then run foundry/publish_teams.py (locks the Foundry account back to private once publishing succeeds)
+  5. In the Fabric portal, click Generate Playbook then Start on the Operations Agent
 EOF
