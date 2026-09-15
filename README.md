@@ -81,7 +81,9 @@ at the bottom. Everything below this point is just what to do.
   az deployment group create --resource-group <rg> --template-file infra/wave0-byo-resources.bicep
   ```
 - A region that isn't `eastus`, that supports Fabric capacities and Foundry
-  VNet injection.
+  VNet injection. The default (`swedencentral`) is already the right choice
+  for most cases — see **How it works** → "Region choice matters" before
+  changing it.
 - Two Fabric admin portal tenant settings enabled, before you start: **Azure
   Private Link** and **Configure workspace-level inbound network rules**
   (plus whatever Copilot / Azure OpenAI tenant settings your tenant needs for
@@ -322,6 +324,33 @@ is wrong. Once locked down, real Teams/Bot Service traffic continues working
 via the `enable_m365_public_endpoint` exception set during Teams publish;
 only the account's general public reachability closes.
 
+### Region choice matters — a lot
+
+**`westus` has a severe, sometimes multi-hour-plus, backend propagation
+delay for a freshly created hosted agent's invocation route.** This is
+separate from — and on top of — the public-from-creation issue above: even
+with the account public from the moment it's created, `westus` repeatedly
+took 15–40+ minutes (and on one occasion never resolved at all across a
+30-minute retry window) before `responses.create()` stopped returning `404
+Subdomain does not map to a resource`. This happened consistently across
+several independent full teardown-and-rebuild cycles, ruling out anything
+specific to one account, one agent, or leftover state.
+
+**`swedencentral` had none of this.** Same code, same Bicep, same sequence —
+the hosted agent responded correctly to a direct query within seconds of
+being deployed, on the first attempt, every time. If you're picking a
+region and don't have another constraint, use `swedencentral` (that's why
+it's the current default in `infra/main.bicepparam`) — or at minimum, avoid
+`westus` for this specific workload.
+
+Two regions this repo tried and rejected for unrelated reasons, if you're
+choosing your own: **`uksouth`** — this subscription had a hard `0` Fabric
+capacity quota there (check first: `az rest --method get --url
+"https://management.azure.com/subscriptions/<sub>/providers/Microsoft.Fabric/locations/<region>/usages?api-version=2023-11-01"`
+— look for `limit` under `CapacityQuota`, needs to be ≥ 8 for an F8
+capacity). **`eastus`** — Operations Agent isn't available there at all
+(unrelated to Foundry; a Fabric limitation).
+
 ### Testing the agent directly
 
 Don't wait for Bot Service/Teams to find out whether the agent actually
@@ -346,12 +375,13 @@ with DefaultAzureCredential() as credential:
 A `404 Subdomain does not map to a resource` or `403 Public access is
 disabled` here — even though the agent shows `active` and the account shows
 `publicNetworkAccess: Enabled` — means the invocation route just isn't
-reachable yet. Confirmed live, repeatedly: this can take anywhere from a
-few minutes to 30+ minutes after a fresh agent (or fresh account) is
-created, independent of how clean the deployment is. Retry every minute or
-two rather than assuming something's broken; deleting and recreating the
-agent does **not** skip this wait, since it's the account's own
-subdomain/routing registration that's slow, not anything agent-specific.
+reachable yet. See **Region choice matters** above first: in `swedencentral`
+this should succeed immediately (if it doesn't, something's actually wrong —
+don't just wait it out). In `westus` this delay is real and can run
+15–40+ minutes; retry every minute or two rather than assuming something's
+broken. Deleting and recreating the agent does **not** skip this wait
+either way, since it's the account's own subdomain/routing registration
+that's slow, not anything agent-specific.
 
 ### `deploy_hosted_agent.py`: RBAC grant and the ACR fallback
 

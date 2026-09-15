@@ -2,7 +2,14 @@ using './main.bicep'
 
 // --- Fill these in before deploying (see infra/README.md phase 0/1) ---
 
-param location = 'westus' // avoid 'eastus' — Operations Agent isn't available there
+// Confirmed live (see README "Region choice matters"): westus has a severe,
+// sometimes 30+ minute or indefinite propagation delay before a freshly
+// deployed hosted agent's invocation route becomes reachable; swedencentral
+// has none of that — the agent responds correctly within seconds every
+// time. Keep this here unless you've independently confirmed your own
+// preferred region doesn't have the same issue. Avoid 'eastus' regardless —
+// Operations Agent isn't available there.
+param location = 'swedencentral'
 // Set by infra/hooks/preprovision.ps1|.sh via `azd env set` before azd provisions —
 // see that hook for why. Falls back to this literal if the hook never ran
 // (e.g. deploying via plain `az deployment sub create` instead of `azd provision`).

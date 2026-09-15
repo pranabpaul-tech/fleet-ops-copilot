@@ -5,8 +5,8 @@
 // rather than creating them itself, so you can swap in existing resources
 // later without touching main.bicep.
 
-@description('Location — should match Wave 1\'s location.')
-param location string = 'westus'
+@description('Location — should match Wave 1\'s location. See README "Region choice matters" for why swedencentral, not westus, is the default.')
+param location string = 'swedencentral'
 
 param searchServiceName string = 'srch-fleetops-${uniqueString(resourceGroup().id)}'
 param storageAccountName string = 'stfleetops${uniqueString(resourceGroup().id)}'
