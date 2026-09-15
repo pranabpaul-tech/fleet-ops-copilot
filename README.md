@@ -25,8 +25,8 @@ flowchart LR
     subgraph Fabric["Microsoft Fabric — F8 capacity"]
         direction TB
         Buses(["Buses sample source"]) --> ES["Eventstream"]
-        ES --> Raw[("BusTelemetryRaw")]
-        Raw -- "update policy" --> Flat[("BusTelemetry")]
+        ES --> Raw[("BusTelemetryRaw Table on Eventlake")]
+        Raw -- "update policy" --> Flat[("BusTelemetry Table on Eventlake")]
         Flat --> OpsAgent["Operations Agent"]
     end
 
