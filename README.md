@@ -72,6 +72,8 @@ at the bottom. Everything below this point is just what to do.
 
 ### Prerequisites
 
+Before getting started, my recommendation is to use GitHub Copilot or Claude Code to carry out the deployment. These tools can help streamline the process and minimise unnecessary challenges and quirks.
+
 - [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) (`azd`) and the Azure CLI (`az`), both signed in
   (`azd auth login`, `az login`) as a real user — not a service principal.
 - Python 3.11+.
